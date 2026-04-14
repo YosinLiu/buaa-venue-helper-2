@@ -1,0 +1,19 @@
+{
+  "name": "buaa-venue-helper-2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "login": "node reserve.js --login",
+    "collect": "node collect_captchas.js",
+    "label": "node label_captchas.js",
+    "reserve": "node reserve.js",
+    "inspect": "node reserve.js --inspect",
+    "inspect:headless": "node reserve.js --inspect --headless"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.80.0",
+    "openai": "^6.32.0",
+    "playwright": "^1.58.2"
+  }
+}

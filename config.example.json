@@ -1,0 +1,89 @@
+{
+  "url": "https://cgyy.buaa.edu.cn/venue/venue-reservation/38",
+  "userDataDir": ".playwright-profile",
+  "disableProxy": false,
+  "headless": false,
+  "releaseTime": "2026-04-17 07:00:00",
+  "releaseDelayMs": 0,
+  "reloadAtRelease": false,
+  "warmupDateText": "04月16日",
+  "refreshDateTexts": [
+    "04月16日",
+    "04月17日"
+  ],
+  "refreshDateMinCycles": 0,
+  "refreshDateSwitchDelayMs": 200,
+  "refreshDateTimeoutMs": 180000,
+  "dateText": "04月17日",
+  "concurrency": 1,
+  "accounts": [
+    {
+      "name": "default",
+      "enabled": true,
+      "userDataDir": ".playwright-profile",
+      "concurrency": 1,
+      "phone": "YOUR_PHONE",
+      "companions": [
+        "YOUR_COMPANION_NAME"
+      ],
+      "slotPreferences": [
+        {
+          "court": "2号",
+          "times": [
+            "07:00-08:00"
+          ]
+        }
+      ]
+    }
+  ],
+  "slotPreferences": [
+    {
+      "court": "2号",
+      "times": [
+        "07:00-08:00"
+      ]
+    }
+  ],
+  "companions": [
+    "YOUR_COMPANION_NAME"
+  ],
+  "phone": "YOUR_PHONE",
+  "agreeText": "已阅读并同意",
+  "submitText": "提交",
+  "captchaPromptText": "请完成安全验证",
+  "captchaSolver": "ddddocr",
+  "captchaDdddocrMode": "preproc_color_probagg",
+  "captchaDdddocrUseGpu": false,
+  "captchaDdddocrGpuDeviceId": 0,
+  "pythonBin": "python3",
+  "geminiApiKey": "",
+  "geminiBaseUrl": "https://api-gateway.glm.ai/v1",
+  "geminiModel": "gemini-3.1-pro-preview",
+  "chaojiyingUser": "",
+  "chaojiyingPass": "",
+  "chaojiyingSoftid": "96001",
+  "captchaWaitTimeoutMs": 180000,
+  "captchaClickIntervalMinMs": 120,
+  "captchaClickIntervalMaxMs": 180,
+  "captchaVerifyTimeoutMs": 3000,
+  "captchaRefreshWaitMs": 220,
+  "captchaRefreshSettleTimeoutMs": 900,
+  "captchaRefreshSettleIntervalMs": 100,
+  "captchaTargetParseTimeoutMs": 1800,
+  "postCaptchaWaitMs": 500,
+  "dateCardPollIntervalMs": 80,
+  "slotSelectionPollIntervalMs": 80,
+  "slotClickIdleTimeoutMs": 700,
+  "slotClickIdleIntervalMs": 80,
+  "debugScreenshots": false,
+  "scrollPageChangeTimeoutMs": 900,
+  "stopBeforeSubmit": false,
+  "actionDelayMs": 500,
+  "selectionRetryCount": 3,
+  "captchaDdddocrWorkerCount": 1,
+  "captchaDdddocrFallbackWorkerCount": 1,
+  "concurrentPageOpenDelayMinMs": 2000,
+  "concurrentPageOpenDelayMaxMs": 4000,
+  "concurrentReleaseStartDelayMinMs": 200,
+  "concurrentReleaseStartDelayMaxMs": 500
+}

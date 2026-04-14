@@ -1,0 +1,15 @@
+# Linux + NVIDIA GPU ddddocr runtime for the buaa-venue conda env.
+#
+# Important: install ddddocr separately with --no-deps. ddddocr declares a
+# dependency on CPU-only onnxruntime, while this Linux setup uses
+# onnxruntime-gpu.
+#
+# Install:
+#   conda activate buaa-venue
+#   pip install -r requirements.txt
+#   pip install --no-deps ddddocr==1.6.1
+
+onnxruntime-gpu[cuda,cudnn]==1.24.4
+opencv-python-headless==4.13.0.92
+pillow==12.2.0
+numpy==2.4.4

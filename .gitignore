@@ -1,0 +1,21 @@
+node_modules/
+__pycache__/
+*.py[cod]
+
+# Local credentials, browser state, and personal runtime config.
+config.json
+memo.txt
+.env
+.env.*
+*-auth.json
+.playwright-profile/
+.playwright-profile-*/
+
+# Generated logs, archives, and debug output.
+*.log
+*.tar.gz
+debug-screenshots/
+screenshots/
+captcha-samples/
+
+.DS_Store
