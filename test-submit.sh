@@ -10,40 +10,41 @@ test-submit.sh 额外支持定时参数：
   --at TIME                 提交时间（Node.js 立即启动准备，到点发请求）。支持 "HH:MM[:SS]" 或 "YYYY-MM-DD HH:MM[:SS]"
   --delay-seconds N         延迟 N 秒后启动 Node.js（用于简单延迟，不如 --at 精确）
 
-─── 三种 day/info 模式 ──────────────────────────────────────────────────────
-  (默认 pre)               --at 前并行拉 captcha + day/info + buddies，到点直接发
-  --day-info-mode poll     --at 前只取 captcha + buddies，到点后轮询 day/info（适合数据 7:00 才开放的情况）
-  --day-info-mode predict  不查 day/info，按 timeId 每日递增规律预测，最快
+─── 五种模式 ────────────────────────────────────────────────────────────────
+  predict（默认）           提前解验证码 + 规则预测 ID，到点直接提交（最快）
+  poll                      提前解验证码 + 到点轮询 day/info 用真实 ID 提交
+  predict-no-captcha        规则预测 ID，到点后才解验证码提交（07:00 开放推荐，避免跨天 token 失效）
+  poll-no-captcha           到点后串行拉验证码+轮询 day/info，都就绪后提交
+  predict-late-check        提前30s完成GET+OCR，到点后 CHECK+提交（兼顾速度与 07:00 token 安全，实验中）
 
-─── 示例（1 个时间段）────────────────────────────────────────────────────────
-  # 默认 pre 模式
+─── 示例 ────────────────────────────────────────────────────────────────────
+  # predict（默认，提前解验证码，规则推断 ID）
   bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
-    --court '2号' --times '07:00-08:00' --with-captcha --execute
+    --court '23号' --times '18:00-19:00' --with-captcha --day-info-mode predict --execute
 
-  # poll 模式（day/info 7:00 后才有数据时推荐）
+  # predict-no-captcha（07:00 开放推荐：到点后才解验证码，避免 token 跨天失效）
+  bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
+    --court '23号' --times '18:00-19:00' --with-captcha --day-info-mode predict-no-captcha --execute
+
+  # predict-late-check（07:00 实验：提前30s GET+OCR，到点后 CHECK，submit 约 07:00:01）
+  bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
+    --court '23号' --times '18:00-19:00' --with-captcha --day-info-mode predict-late-check --execute
+
+  # poll（提前解验证码，到点后拉取真实 ID）
   bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
     --court '2号' --times '07:00-08:00' --with-captcha --day-info-mode poll --execute
 
-  # predict 模式（最快，无需查 day/info）
+  # poll-no-captcha（到点后串行拉验证码+场地信息）
   bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
-    --court '2号' --times '07:00-08:00' --with-captcha --day-info-mode predict --execute
+    --court '2号' --times '07:00-08:00' --with-captcha --day-info-mode poll-no-captcha --execute
 
-─── 示例（2 个时间段）────────────────────────────────────────────────────────
-  # 默认 pre 模式
+  # 2个时间段
   bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
-    --court '2号' --times '07:00-08:00,08:00-09:00' --with-captcha --execute
-
-  # poll 模式
-  bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
-    --court '2号' --times '07:00-08:00,08:00-09:00' --with-captcha --day-info-mode poll --execute
-
-  # predict 模式
-  bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
-    --court '2号' --times '07:00-08:00,08:00-09:00' --with-captcha --day-info-mode predict --execute
+    --court '23号' --times '18:00-19:00,19:00-20:00' --with-captcha --day-info-mode predict-no-captcha --execute
 
 ─── 后台定时启动 ────────────────────────────────────────────────────────────
   nohup bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
-    --court '2号' --times '07:00-08:00' --with-captcha --day-info-mode predict --execute \
+    --court '23号' --times '18:00-19:00' --with-captcha --day-info-mode predict-no-captcha --execute \
     > test-submit-timer.log 2>&1 &
 
 ─── 首次使用或登录状态过期 ──────────────────────────────────────────────────

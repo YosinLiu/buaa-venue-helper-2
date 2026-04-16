@@ -77,19 +77,25 @@ function printHelp() {
   --times A,B                 覆盖 config 里的时间，例如 07:00-08:00,19:00-20:00
   --with-captcha              提交前获取点选验证码，用 DDDDOCR 校验并填入 captchaVerification
   --captcha-attempts N        验证码识别/校验最多尝试次数，默认 3
+  --captcha-offset-px N       [测试用] OCR 识别后将每个点偏移 +N 像素，默认 0（不偏移）
   --min-captcha-age-ms N      验证码从 get 到 submit 的最小间隔，默认 1300ms
-  --min-captcha-check-age-ms N  验证码 check 完成到 submit 的最小间隔，默认 500ms
+  --min-captcha-check-age-ms N  验证码 check 完成到 submit 的最小间隔，默认 700ms
   --captcha-verification VAL  手动填入验证码 check 返回的 captchaVerification
   --payload FILE              直接读取 JSON payload，不自动查 day/info 和 buddies
   --execute                   真的提交；不加时仅 dry-run
   --headless                  无头打开账号 profile 读取登录态
   --save-auth                 启动浏览器读取登录态并保存到文件后退出（首次使用或登录过期时运行）
   --at TIME                   目标提交时间，提前启动做好准备，到点发请求。支持 "HH:MM[:SS]" 或 "YYYY-MM-DD HH:MM[:SS]"
-  --day-info-mode MODE        day/info 获取策略：
-                                pre（默认）—— --at 前预取，captcha+day/info 并行
-                                poll        —— --at 前只取 captcha+buddies，到时间后轮询 day/info 直到有数据再提交
-                                predict     —— 不查 day/info，按 timeId 每日递增规律预测 ID，直接提交
-  --day-info-poll-interval-ms N  poll 模式轮询间隔，默认 200ms
+  --captcha-pre-window-ms N   predict/poll 模式下，在 --at 前 N ms 开始解验证码，默认 8000ms。
+                              设为 0 表示在 --at 时刻才开始解（避免跨天 07:00 token 失效）
+  --captcha-pre-ocr-window-ms N  predict-late-check 模式下，在 --at 前 N ms 完成 GET+OCR（CHECK 在 --at 后），默认 30000ms
+  --day-info-mode MODE        预约策略（默认 predict）：
+                                predict             —— 提前解验证码 + 规则预测 ID，到点直接提交（最快）
+                                poll                —— 提前解验证码 + 到点轮询 day/info，用真实 ID 提交
+                                predict-no-captcha  —— 规则预测 ID，到点后才解验证码再提交（避免 07:00 token 失效）
+                                poll-no-captcha     —— 到点后串行拉验证码+轮询 day/info，都就绪后提交
+                                predict-late-check  —— 提前 N 秒（默认30s）完成 GET+OCR，到点后 CHECK+提交（兼顾速度与 07:00 token 安全）
+  --day-info-poll-interval-ms N  poll/poll-no-captcha 模式轮询间隔，默认 200ms
 `);
 }
 
@@ -102,7 +108,8 @@ function parseArgs(argv) {
     withCaptcha: false,
     captchaAttempts: 3,
     minCaptchaAgeMs: 1300,
-    minCaptchaCheckAgeMs: 500,
+    minCaptchaCheckAgeMs: 700,
+    captchaOffsetPx: 0,
     captchaVerification: "",
     payloadFile: "",
     venueSiteId: 0,
@@ -110,8 +117,10 @@ function parseArgs(argv) {
     headless: false,
     saveAuth: false,
     at: "",
-    dayInfoMode: "pre",
+    dayInfoMode: "predict",
     dayInfoPollIntervalMs: 200,
+    captchaPreWindowMs: 8000,
+    captchaPreOcrWindowMs: 30000,
     help: false,
   };
 
@@ -128,12 +137,18 @@ function parseArgs(argv) {
     else if (arg.startsWith("--day-info-mode=")) args.dayInfoMode = normalizeText(arg.slice("--day-info-mode=".length));
     else if (arg === "--day-info-poll-interval-ms") args.dayInfoPollIntervalMs = Math.max(50, Number(argv[++i]) || 200);
     else if (arg.startsWith("--day-info-poll-interval-ms=")) args.dayInfoPollIntervalMs = Math.max(50, Number(arg.slice("--day-info-poll-interval-ms=".length)) || 200);
+    else if (arg === "--captcha-pre-window-ms") args.captchaPreWindowMs = Math.max(0, Number(argv[++i]) || 0);
+    else if (arg.startsWith("--captcha-pre-window-ms=")) args.captchaPreWindowMs = Math.max(0, Number(arg.slice("--captcha-pre-window-ms=".length)) || 0);
+    else if (arg === "--captcha-pre-ocr-window-ms") args.captchaPreOcrWindowMs = Math.max(1000, Number(argv[++i]) || 30000);
+    else if (arg.startsWith("--captcha-pre-ocr-window-ms=")) args.captchaPreOcrWindowMs = Math.max(1000, Number(arg.slice("--captcha-pre-ocr-window-ms=".length)) || 30000);
     else if (arg === "--captcha-attempts") args.captchaAttempts = Math.max(1, Number(argv[++i]) || 3);
     else if (arg.startsWith("--captcha-attempts=")) args.captchaAttempts = Math.max(1, Number(arg.slice("--captcha-attempts=".length)) || 3);
     else if (arg === "--min-captcha-age-ms") args.minCaptchaAgeMs = Math.max(0, Number(argv[++i]) || 0);
     else if (arg.startsWith("--min-captcha-age-ms=")) args.minCaptchaAgeMs = Math.max(0, Number(arg.slice("--min-captcha-age-ms=".length)) || 0);
     else if (arg === "--min-captcha-check-age-ms") args.minCaptchaCheckAgeMs = Math.max(0, Number(argv[++i]) || 0);
     else if (arg.startsWith("--min-captcha-check-age-ms=")) args.minCaptchaCheckAgeMs = Math.max(0, Number(arg.slice("--min-captcha-check-age-ms=".length)) || 0);
+    else if (arg === "--captcha-offset-px") args.captchaOffsetPx = Number(argv[++i]) || 0;
+    else if (arg.startsWith("--captcha-offset-px=")) args.captchaOffsetPx = Number(arg.slice("--captcha-offset-px=".length)) || 0;
     else if (arg === "--account") args.account = normalizeText(argv[++i]);
     else if (arg.startsWith("--account=")) args.account = normalizeText(arg.slice("--account=".length));
     else if (arg === "--date") args.date = normalizeText(argv[++i]);
@@ -529,6 +544,26 @@ async function apiRequest(apiPath, options, auth) {
   };
 }
 
+// 测量本机与服务器的时钟偏差（serverTime - localTime，毫秒）
+// 正值 = 服务器快，负值 = 服务器慢。精度约 ±500ms（Date 头秒级）
+async function measureServerClockOffset() {
+  const localBefore = Date.now();
+  let resp;
+  try {
+    resp = await fetch(`${DOMAIN_URL}/venue/venue-reservation/38`, { method: "HEAD" });
+  } catch {
+    return null;
+  }
+  const localAfter = Date.now();
+  const serverDateStr = resp.headers.get("date");
+  if (!serverDateStr) return null;
+  const serverMs = new Date(serverDateStr).getTime();
+  if (isNaN(serverMs)) return null;
+  // 用请求中点估算服务器时间对应的本机时刻
+  const localMid = Math.round((localBefore + localAfter) / 2);
+  return serverMs - localMid;
+}
+
 function unwrapApiData(result, label) {
   const body = result.body;
   if (!body) {
@@ -697,6 +732,13 @@ async function resolveCaptchaVerification(account, args, auth, worker) {
     }
 
     const checkPosArr = transformCaptchaCoords(coords, imageSize);
+    if (args.captchaOffsetPx) {
+      for (const pos of checkPosArr) {
+        pos.x = (pos.x || 0) + args.captchaOffsetPx;
+        pos.y = (pos.y || 0) + args.captchaOffsetPx;
+      }
+      log(`[TEST] 坐标偏移 +${args.captchaOffsetPx}px → ${JSON.stringify(checkPosArr)}`);
+    }
     const checkPayload = {
       captchaType,
       pointJson: secretKey
@@ -747,6 +789,87 @@ async function resolveCaptchaVerification(account, args, auth, worker) {
   }
 
   throw new Error(`验证码校验失败，已尝试 ${args.captchaAttempts} 次。最后错误: ${lastError}`);
+}
+
+// predict-late-check 专用：Phase 1 — GET + OCR，不做 CHECK，返回中间状态
+async function resolveCaptchaGetOcr(account, args, auth, worker) {
+  const captchaType = normalizeText(account.captchaType || CAPTCHA_TYPE_CLICK_WORD);
+  const clientUid = auth.pointClientUid || makeUuid("point");
+  let lastError = "";
+  for (let attempt = 1; attempt <= args.captchaAttempts; attempt++) {
+    if (attempt > 1) log(`验证码 GET/OCR 重试第 ${attempt} 次`);
+    const captchaStartedAt = Date.now();
+    log("GET /api/captcha/get");
+    const getResult = await apiRequest("/api/captcha/get", {
+      data: { captchaType, clientUid, ts: Date.now() },
+    }, auth);
+    log(`captcha/get 完成 (+${getResult.elapsedMs}ms)`);
+    const getData = unwrapApiData(getResult, "/api/captcha/get");
+    if (!captchaRepOk(getData)) {
+      lastError = `get repCode=${getData.repCode}: ${captchaRepMessage(getData)}`;
+      continue;
+    }
+    const repData = getData.repData || getData;
+    const wordList = Array.isArray(repData.wordList) ? repData.wordList.map(normalizeText).filter(Boolean) : [];
+    const imageBase64 = normalizeText(repData.originalImageBase64);
+    const backToken = normalizeText(repData.token);
+    const secretKey = normalizeText(repData.secretKey);
+    if (!imageBase64 || !backToken || wordList.length === 0) {
+      lastError = `get 返回缺字段: ${JSON.stringify(Object.keys(repData || {}))}`;
+      continue;
+    }
+    const imageBuffer = Buffer.from(imageBase64, "base64");
+    const imageSize = pngSize(imageBuffer);
+    log(`OCR 识别中 [${wordList.join(",")}]${worker ? " (worker)" : ""}`);
+    const solver = await solveCaptchaImage(account, imageBuffer, wordList, worker);
+    log(`OCR 完成 (+${solver.elapsedMs}ms)`);
+    const coords = Array.isArray(solver.result.coords) ? solver.result.coords : [];
+    const found = Array.isArray(solver.result.found) ? solver.result.found : [];
+    if (solver.result.error || coords.length < wordList.length || found.some((x) => !x) || coords.some((x) => !x)) {
+      lastError = `DDDDOCR 未完整识别: ${JSON.stringify(solver.result)}`;
+      continue;
+    }
+    const checkPosArr = transformCaptchaCoords(coords, imageSize);
+    if (args.captchaOffsetPx) {
+      for (const pos of checkPosArr) {
+        pos.x = (pos.x || 0) + args.captchaOffsetPx;
+        pos.y = (pos.y || 0) + args.captchaOffsetPx;
+      }
+      log(`[TEST] 坐标偏移 +${args.captchaOffsetPx}px → ${JSON.stringify(checkPosArr)}`);
+    }
+    return { captchaStartedAt, captchaType, backToken, secretKey, checkPosArr, wordList, coords, imageSize,
+      getMs: getResult.elapsedMs, ocrMs: solver.elapsedMs, ddddocrMode: solver.mode, attempt };
+  }
+  throw new Error(`验证码 GET/OCR 失败，已尝试 ${args.captchaAttempts} 次。最后错误: ${lastError}`);
+}
+
+// predict-late-check 专用：Phase 2 — 仅做 CHECK，接受 resolveCaptchaGetOcr 的返回值
+async function resolveCaptchaCheckOnly(auth, getOcrResult) {
+  const { captchaType, backToken, secretKey, checkPosArr } = getOcrResult;
+  const checkPayload = {
+    captchaType,
+    pointJson: secretKey
+      ? encryptCaptchaValue(JSON.stringify(checkPosArr), secretKey)
+      : JSON.stringify(checkPosArr),
+    token: backToken,
+  };
+  log("POST /api/captcha/check");
+  const checkResult = await apiRequest("/api/captcha/check", { method: "POST", data: checkPayload }, auth);
+  const captchaCheckedAt = Date.now();
+  log(`captcha/check 完成 (+${checkResult.elapsedMs}ms)`);
+  const checkData = unwrapApiData(checkResult, "/api/captcha/check");
+  if (!captchaRepOk(checkData)) {
+    throw new Error(`check repCode=${checkData?.repCode}: ${captchaRepMessage(checkData)}`);
+  }
+  return {
+    captchaVerification: secretKey
+      ? encryptCaptchaValue(`${backToken}---${JSON.stringify(checkPosArr)}`, secretKey)
+      : `${backToken}---${JSON.stringify(checkPosArr)}`,
+    captchaToken: backToken,
+    captchaStartedAt: getOcrResult.captchaStartedAt,
+    captchaCheckedAt,
+    checkMs: checkResult.elapsedMs,
+  };
 }
 
 function flattenSpaces(dayInfo, targetDate) {
@@ -819,6 +942,20 @@ function reservationTypeForSubmit(account) {
   return Number.isFinite(value) ? value : -1;
 }
 
+function dateWeekday(dateText) {
+  const date = new Date(`${dateText}T00:00:00+08:00`);
+  const day = date.getDay();
+  if (!Number.isFinite(day)) return null;
+  return day;
+}
+
+function predictedOrderFee(targetDate, startHour) {
+  const weekday = dateWeekday(targetDate);
+  const isWeekend = weekday === 0 || weekday === 6;
+  if (isWeekend) return startHour >= 10 ? 35 : 25;
+  return startHour >= 16 ? 25 : 15;
+}
+
 function unwrapList(data) {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.content)) return data.content;
@@ -856,76 +993,7 @@ async function resolveBuddyIds(account, auth) {
   return { buddyIds: buddyIds.filter((id) => id !== undefined && id !== null), buddyDebug };
 }
 
-async function buildPayload(account, args, auth) {
-  if (args.payloadFile) {
-    return {
-      payload: JSON.parse(await fs.readFile(path.resolve(process.cwd(), args.payloadFile), "utf8")),
-      debug: { source: args.payloadFile },
-    };
-  }
-
-  const venueSiteId = resolveVenueSiteId(account, args);
-  if (!venueSiteId) throw new Error("无法从 config.url 推导 venueSiteId，请在 config.json 里加 venueSiteId");
-
-  const targetDate = args.date || parseConfigDate(account.dateText, account.releaseTime);
-  if (!targetDate) throw new Error("无法推导预约日期，请传 --date YYYY-MM-DD");
-
-  const slotPreferences = resolveSlotPreferences(account, args);
-  if (slotPreferences.length === 0) throw new Error("没有可用 slotPreferences，也没有提供 --court/--times");
-
-  log("GET /api/reservation/day/info");
-  const dayInfoResult = await apiRequest("/api/reservation/day/info", {
-    data: {
-      venueSiteId,
-      searchDate: targetDate,
-      hasReserveInfo: 1,
-    },
-  }, auth);
-  log(`day/info 完成 (+${dayInfoResult.elapsedMs}ms)`);
-  const dayInfo = unwrapApiData(dayInfoResult, "/api/reservation/day/info");
-
-  const { orderItems, debug: slotDebug, orderPrice } = buildReservationOrder(dayInfo, slotPreferences, targetDate);
-  for (const item of slotDebug) {
-    log(`场地 ${item.courtMatched}(spaceId=${item.spaceId}) × ${item.timeMatched}(timeId=${item.timeId}) ¥${item.orderFee ?? 0}`);
-  }
-  const reservationType = reservationTypeForSubmit(account);
-  const weekStartDate = normalizeText(Array.isArray(dayInfo.reservationDateList)
-    ? dayInfo.reservationDateList[0]
-    : dayInfo.weekStartDate) || targetDate;
-  log("GET /api/buddies");
-  const { buddyIds, buddyDebug } = await resolveBuddyIds(account, auth);
-  log(`buddies 完成`);
-
-  const payload = {
-    venueSiteId,
-    reservationDate: targetDate,
-    weekStartDate,
-    reservationOrderJson: JSON.stringify(orderItems),
-    reservationType,
-    phone: normalizeText(account.phone),
-    orderPin: encryptFrontendValue("100,100"),
-  };
-
-  if (orderPrice > 0) payload.orderPrice = orderPrice;
-  if (buddyIds.length > 0) payload.buddyIds = buddyIds.join(",");
-  if (args.captchaVerification) payload.captchaVerification = args.captchaVerification;
-
-  return {
-    payload,
-    debug: {
-      targetDate,
-      dayInfoMs: dayInfoResult.elapsedMs,
-      weekStartDate,
-      isCaptchaCheck: dayInfo.isCaptchaCheck,
-      orderPrice,
-      slotDebug,
-      buddyDebug,
-      dayInfoKeys: Object.keys(dayInfo || {}).sort(),
-    },
-  };
-}
-
-// 从 buildPayload 拆出的底层组装函数（poll/predict 模式共用）
+// 底层组装函数（所有模式共用）
 function assemblePayload(account, args, { venueSiteId, targetDate, weekStartDate, orderItems, orderPrice, buddyIds }) {
   const reservationType = reservationTypeForSubmit(account);
   const payload = {
@@ -935,7 +1003,7 @@ function assemblePayload(account, args, { venueSiteId, targetDate, weekStartDate
     reservationOrderJson: JSON.stringify(orderItems),
     reservationType,
     phone: normalizeText(account.phone),
-    orderPin: encryptFrontendValue("100,100"),
+    orderPin: encryptFrontendValue(account.submitOrderPin || "100,100"),
   };
   if (orderPrice > 0) payload.orderPrice = orderPrice;
   if (buddyIds.length > 0) payload.buddyIds = buddyIds.join(",");
@@ -1004,7 +1072,7 @@ function predictItems(account, args) {
       const timeIndex = startHour - 7; // 07:00 → index 0, 08:00 → 1, …, 21:00 → 14
       if (timeIndex < 0 || timeIndex > 14) throw new Error(`时间超出范围(07:00-21:00): ${timeRange}`);
       const timeId = firstTimeId + timeIndex;
-      const price = startHour >= 16 ? 25 : 15;
+      const price = predictedOrderFee(targetDate, startHour);
       orderPrice += price;
       orderItems.push({ spaceId, timeId, venueSpaceGroupId: null });
       slotDebug.push({ court: slot.court, spaceId, time: normalizeTimeRange(timeRange), timeId, orderFee: price, diffDays, firstTimeId });
@@ -1029,10 +1097,20 @@ async function main() {
 
   // Parse --at early to fail fast on bad format
   let targetSubmitTime = 0;
+  let serverClockOffset = 0; // serverTime - localTime（毫秒）
   if (args.at) {
     targetSubmitTime = parseTargetTime(args.at);
     const secsUntil = Math.round((targetSubmitTime - Date.now()) / 1000);
     log(`目标提交时间: ${new Date(targetSubmitTime).toLocaleString("zh-CN")} (${secsUntil}s 后)`);
+    // 测量服务器时钟偏差，用于修正 --at 等待时间
+    const offset = await measureServerClockOffset();
+    if (offset !== null) {
+      serverClockOffset = offset;
+      const sign = offset >= 0 ? "+" : "";
+      log(`服务器时钟偏差: ${sign}${offset}ms（服务器${offset >= 0 ? "快" : "慢"}${Math.abs(offset)}ms，本机 ${-offset >= 0 ? "快" : "慢"}${Math.abs(offset)}ms）`);
+    } else {
+      log("服务器时钟偏差: 无法获取（跳过修正）");
+    }
   }
 
   let context;
@@ -1093,32 +1171,98 @@ async function main() {
     }
 
     const needCaptcha = args.withCaptcha && !args.captchaVerification;
-    const mode = args.dayInfoMode || "pre";
-    if (!["pre", "poll", "predict"].includes(mode)) {
-      throw new Error(`--day-info-mode 无效值 "${mode}"，可选: pre | poll | predict`);
+    const mode = args.dayInfoMode || "predict";
+    if (!["predict", "poll", "predict-no-captcha", "poll-no-captcha", "predict-late-check"].includes(mode)) {
+      throw new Error(`--day-info-mode 无效值 "${mode}"，可选: predict | poll | predict-no-captcha | poll-no-captcha | predict-late-check`);
     }
-    let payload, debug;
-    let pollStash = null; // 仅 poll 模式用：暂存 captchaResult + buddiesResult
+    const isNoCaptchaMode = mode === "predict-no-captcha" || mode === "poll-no-captcha";
+    const isPredictMode = mode === "predict" || mode === "predict-no-captcha";
 
-    if (mode === "pre") {
-      // 默认：captcha + day/info + buddies 全部在 --at 前并行拉取
-      const [captchaResult, built] = await Promise.all([
-        needCaptcha ? resolveCaptchaVerification(account, args, auth, worker) : Promise.resolve(null),
-        buildPayload(account, args, auth),
-      ]);
-      payload = built.payload;
-      debug = built.debug;
-      if (captchaResult) {
-        payload.captchaVerification = captchaResult.captchaVerification;
-        payload.captchaToken = captchaResult.captchaToken;
-        debug.captchaDebug = captchaResult.debug;
-        captchaStartedAt = captchaResult.captchaStartedAt;
-        captchaCheckedAt = captchaResult.captchaCheckedAt;
+    let payload, debug;
+
+    if (mode === "predict-late-check") {
+      // ─── predict-late-check：GET+OCR 在 --at 前 N 秒，CHECK+submit 在 --at 后 ─
+      // 目的：GET/OCR 在非高峰期完成（快），CHECK 在 --at 后打（一次轻量请求），submit 约 07:00:01
+      const buddiesResult = await resolveBuddyIds(account, auth);
+      const items = predictItems(account, args);
+      for (const item of items.slotDebug) {
+        log(`场地 ${item.court}(spaceId=${item.spaceId}) × ${item.time}(timeId=${item.timeId}) ¥${item.orderFee}`);
       }
-    } else {
-      // poll / predict：--at 前只取 captcha + buddies，不查 day/info
+      payload = assemblePayload(account, args, { ...items, buddyIds: buddiesResult.buddyIds });
+      debug = { mode, targetDate: items.targetDate, weekStartDate: items.weekStartDate,
+        orderPrice: items.orderPrice, slotDebug: items.slotDebug, buddyDebug: buddiesResult.buddyDebug };
+
+      // Phase 1：GET+OCR（在 --at 前 captchaPreOcrWindowMs 毫秒）
+      let getOcrResult = null;
+      if (needCaptcha) {
+        if (targetSubmitTime > 0) {
+          const ocrStartTime = targetSubmitTime - args.captchaPreOcrWindowMs;
+          const ocrDelay = Math.max(0, ocrStartTime - Date.now());
+          if (ocrDelay > 0) {
+            log(`验证码 GET+OCR 将在 ${ocrDelay}ms 后开始（--at 前 ${args.captchaPreOcrWindowMs}ms）`);
+            await sleep(ocrDelay);
+          }
+        }
+        getOcrResult = await resolveCaptchaGetOcr(account, args, auth, worker);
+        captchaStartedAt = getOcrResult.captchaStartedAt;
+        log(`GET+OCR 完成，等待 --at 后执行 CHECK（token: ${getOcrResult.backToken.slice(0, 8)}...）`);
+      }
+
+      console.log("账号:", account.name || account.accountName);
+      console.log("接口:", "/api/reservation/order/submit");
+      console.log(`调试信息 (CHECK 将在 --at 后执行，GET+OCR 已在 --at 前 ${args.captchaPreOcrWindowMs}ms 完成):`);
+      console.log(JSON.stringify(debug, null, 2));
+      if (!args.execute) {
+        console.log("DRY-RUN: 未提交。加 --execute 才会真正 POST。");
+        return;
+      }
+
+      // 等待 --at
+      if (targetSubmitTime > 0) {
+        const waitMs = targetSubmitTime - serverClockOffset - Date.now();
+        if (waitMs > 0) {
+          log(`等待目标时间: ${waitMs}ms`);
+          await sleep(waitMs);
+        } else {
+          log(`目标时间已过 (${-waitMs}ms 前)，立即 CHECK`);
+        }
+      }
+
+      // Phase 2：CHECK（在 --at 时刻）
+      if (needCaptcha && getOcrResult) {
+        const checkResult = await resolveCaptchaCheckOnly(auth, getOcrResult);
+        captchaCheckedAt = checkResult.captchaCheckedAt;
+        payload.captchaVerification = checkResult.captchaVerification;
+        payload.captchaToken = checkResult.captchaToken;
+        debug.captchaDebug = { ...getOcrResult, checkMs: checkResult.checkMs };
+      }
+
+    } else if (!isNoCaptchaMode) {
+      // ─── predict / poll：--at 前预先解验证码 ───────────────────────────────
+      // captchaPreWindowMs > 0 → 在 --at 前 N ms 开始解（默认 8000ms）
+      // captchaPreWindowMs = 0 → 在 --at 时刻才开始解（适合 07:00 边界场景）
+      let captchaStartDelay = 0;
+      if (targetSubmitTime > 0 && needCaptcha) {
+        const captchaStartTime = targetSubmitTime - args.captchaPreWindowMs;
+        captchaStartDelay = Math.max(0, captchaStartTime - Date.now());
+        if (captchaStartDelay > 0) {
+          const label = args.captchaPreWindowMs > 0
+            ? `--at 前 ${args.captchaPreWindowMs}ms`
+            : `--at 时刻（captcha-pre-window-ms=0）`;
+          log(`验证码将在 ${captchaStartDelay}ms 后开始解算（${label}）`);
+        }
+      }
+
+      const delayedCaptcha = needCaptcha
+        ? (async () => {
+            if (captchaStartDelay > 0) await sleep(captchaStartDelay);
+            return resolveCaptchaVerification(account, args, auth, worker);
+          })()
+        : Promise.resolve(null);
+
+      // captcha（延迟）+ buddies 并行；不查 day/info
       const [captchaResult, buddiesResult] = await Promise.all([
-        needCaptcha ? resolveCaptchaVerification(account, args, auth, worker) : Promise.resolve(null),
+        delayedCaptcha,
         resolveBuddyIds(account, auth),
       ]);
       if (captchaResult) {
@@ -1126,68 +1270,142 @@ async function main() {
         captchaCheckedAt = captchaResult.captchaCheckedAt;
       }
 
-      if (mode === "predict") {
+      if (isPredictMode) {
+        // predict：规则推断 ID，payload 在 --at 前就准备好
         const items = predictItems(account, args);
         for (const item of items.slotDebug) {
           log(`场地 ${item.court}(spaceId=${item.spaceId}) × ${item.time}(timeId=${item.timeId}) ¥${item.orderFee}`);
         }
         payload = assemblePayload(account, args, { ...items, buddyIds: buddiesResult.buddyIds });
-        debug = { mode: "predict", targetDate: items.targetDate, weekStartDate: items.weekStartDate,
+        debug = { mode, targetDate: items.targetDate, weekStartDate: items.weekStartDate,
           orderPrice: items.orderPrice, slotDebug: items.slotDebug, buddyDebug: buddiesResult.buddyDebug };
         if (captchaResult) {
           payload.captchaVerification = captchaResult.captchaVerification;
           payload.captchaToken = captchaResult.captchaToken;
           debug.captchaDebug = captchaResult.debug;
         }
+        console.log("账号:", account.name || account.accountName);
+        console.log("接口:", "/api/reservation/order/submit");
+        console.log("调试信息:");
+        console.log(JSON.stringify(debug, null, 2));
+        console.log("payload:");
+        console.log(JSON.stringify(payload, null, 2));
+        if (!args.execute) {
+          console.log("DRY-RUN: 未提交。确认 payload 后加 --execute 才会真正 POST。");
+          return;
+        }
       } else {
-        // poll：payload 要等 --at 后拿到 day/info 才能组装，先暂存
-        pollStash = { captchaResult, buddiesResult };
+        // poll：buddies 和 captcha 准备好了，等 --at 后再拉 day/info
+        if (!args.execute) {
+          console.log("DRY-RUN (poll): 到时间后将轮询 day/info 并提交。加 --execute 才会真正执行。");
+          return;
+        }
       }
-    }
 
-    // 打印 payload 信息（pre / predict 模式在 --at 等待前就有 payload）
-    if (payload) {
-      console.log("账号:", account.name || account.accountName);
-      console.log("接口:", "/api/reservation/order/submit");
-      console.log("调试信息:");
-      console.log(JSON.stringify(debug, null, 2));
-      console.log("payload:");
-      console.log(JSON.stringify(payload, null, 2));
-      if (!args.execute) {
-        console.log("DRY-RUN: 未提交。确认 payload 后加 --execute 才会真正 POST。");
-        return;
+      // 等待 --at
+      if (targetSubmitTime > 0) {
+        // serverClockOffset = serverTime - localTime
+        // 要等到 serverTime >= targetSubmitTime，即 localTime >= targetSubmitTime - serverClockOffset
+        const waitMs = targetSubmitTime - serverClockOffset - Date.now();
+        if (waitMs > 0) {
+          log(`等待目标时间: ${waitMs}ms`);
+          await sleep(waitMs);
+        } else {
+          log(`目标时间已过 (${-waitMs}ms 前)，立即提交`);
+        }
       }
-    } else if (!args.execute) {
-      // poll 模式 dry-run：无需等待和轮询
-      console.log("DRY-RUN (poll 模式): 到时间后将轮询 day/info 并提交。加 --execute 才会真正执行。");
-      return;
-    }
 
-    // 等待 --at 目标时间（三种模式都在这里等）
-    if (targetSubmitTime > 0) {
-      const waitMs = targetSubmitTime - Date.now();
-      if (waitMs > 0) {
-        log(`等待目标时间: ${waitMs}ms`);
-        await sleep(waitMs);
+      if (!isPredictMode) {
+        // poll：到点后轮询 day/info
+        const items = await pollForDayInfo(account, args, auth);
+        payload = assemblePayload(account, args, { ...items, buddyIds: buddiesResult.buddyIds });
+        debug = { mode, targetDate: items.targetDate, weekStartDate: items.weekStartDate,
+          orderPrice: items.orderPrice, slotDebug: items.slotDebug, buddyDebug: buddiesResult.buddyDebug };
+        if (captchaResult) {
+          payload.captchaVerification = captchaResult.captchaVerification;
+          payload.captchaToken = captchaResult.captchaToken;
+          debug.captchaDebug = captchaResult.debug;
+        }
+        console.log("payload:");
+        console.log(JSON.stringify(payload, null, 2));
+      }
+
+    } else {
+      // ─── predict-no-captcha / poll-no-captcha：--at 后才解验证码 ──────────
+      // 验证码在 07:00 之后才取，避免跨天 token 失效
+
+      // buddies 立即拉取
+      const buddiesResult = await resolveBuddyIds(account, auth);
+      const buddyIds = buddiesResult.buddyIds;
+
+      if (isPredictMode) {
+        // predict-no-captcha：规则推断 ID，--at 前就可以组装 payload（无 captchaVerification）
+        const items = predictItems(account, args);
+        for (const item of items.slotDebug) {
+          log(`场地 ${item.court}(spaceId=${item.spaceId}) × ${item.time}(timeId=${item.timeId}) ¥${item.orderFee}`);
+        }
+        payload = assemblePayload(account, args, { ...items, buddyIds });
+        debug = { mode, targetDate: items.targetDate, weekStartDate: items.weekStartDate,
+          orderPrice: items.orderPrice, slotDebug: items.slotDebug, buddyDebug: buddiesResult.buddyDebug };
+        console.log("账号:", account.name || account.accountName);
+        console.log("接口:", "/api/reservation/order/submit");
+        console.log("调试信息 (captchaVerification 将在 --at 后填入):");
+        console.log(JSON.stringify(debug, null, 2));
+        console.log("payload (captchaVerification 将在 --at 后填入):");
+        console.log(JSON.stringify(payload, null, 2));
+        if (!args.execute) {
+          console.log("DRY-RUN: 未提交。加 --execute 才会真正 POST。");
+          return;
+        }
       } else {
-        log(`目标时间已过 (${-waitMs}ms 前)，立即提交`);
+        if (!args.execute) {
+          console.log("DRY-RUN (poll-no-captcha): 到时间后并行拉验证码和场地信息。加 --execute 才会真正执行。");
+          return;
+        }
       }
-    }
 
-    // poll 模式：到点后轮询 day/info，组装 payload
-    if (mode === "poll") {
-      const { captchaResult, buddiesResult } = pollStash;
-      const items = await pollForDayInfo(account, args, auth);
-      payload = assemblePayload(account, args, { ...items, buddyIds: buddiesResult.buddyIds });
-      debug = { mode: "poll", targetDate: items.targetDate, weekStartDate: items.weekStartDate,
-        orderPrice: items.orderPrice, slotDebug: items.slotDebug, buddyDebug: buddiesResult.buddyDebug };
-      if (captchaResult) {
-        payload.captchaVerification = captchaResult.captchaVerification;
-        payload.captchaToken = captchaResult.captchaToken;
-        debug.captchaDebug = captchaResult.debug;
+      // 等待 --at
+      if (targetSubmitTime > 0) {
+        // serverClockOffset = serverTime - localTime
+        // 要等到 serverTime >= targetSubmitTime，即 localTime >= targetSubmitTime - serverClockOffset
+        const waitMs = targetSubmitTime - serverClockOffset - Date.now();
+        if (waitMs > 0) {
+          log(`等待目标时间: ${waitMs}ms`);
+          await sleep(waitMs);
+        } else {
+          log(`目标时间已过 (${-waitMs}ms 前)，立即提交`);
+        }
       }
-      console.log("payload:");
-      console.log(JSON.stringify(payload, null, 2));
+
+      if (isPredictMode) {
+        // predict-no-captcha：--at 后解验证码，payload 已准备好
+        if (needCaptcha) {
+          const cap = await resolveCaptchaVerification(account, args, auth, worker);
+          captchaStartedAt = cap.captchaStartedAt;
+          captchaCheckedAt = cap.captchaCheckedAt;
+          payload.captchaVerification = cap.captchaVerification;
+          payload.captchaToken = cap.captchaToken;
+          if (debug) debug.captchaDebug = cap.debug;
+        }
+      } else {
+        // poll-no-captcha：--at 后先轮询 day/info，拿到后立即解验证码（同一 session，避免并发竞态）
+        const items = await pollForDayInfo(account, args, auth);
+        const cap = needCaptcha ? await resolveCaptchaVerification(account, args, auth, worker) : null;
+        if (cap) {
+          captchaStartedAt = cap.captchaStartedAt;
+          captchaCheckedAt = cap.captchaCheckedAt;
+        }
+        payload = assemblePayload(account, args, { ...items, buddyIds });
+        debug = { mode, targetDate: items.targetDate, weekStartDate: items.weekStartDate,
+          orderPrice: items.orderPrice, slotDebug: items.slotDebug, buddyDebug: buddiesResult.buddyDebug };
+        if (cap) {
+          payload.captchaVerification = cap.captchaVerification;
+          payload.captchaToken = cap.captchaToken;
+          debug.captchaDebug = cap.debug;
+        }
+        console.log("payload:");
+        console.log(JSON.stringify(payload, null, 2));
+      }
     }
 
     // 提交循环（三种模式共用）
