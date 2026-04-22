@@ -19,16 +19,16 @@ test-submit.sh 额外支持定时参数：
 
 ─── 示例 ────────────────────────────────────────────────────────────────────
   # predict（默认，提前解验证码，规则推断 ID）
-  bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
-    --court '23号' --times '18:00-19:00' --with-captcha --day-info-mode predict --execute
+  bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-19 \
+    --court '1号' --times '16:00-17:00,17:00-18:00' --with-captcha --day-info-mode predict --execute
 
   # predict-no-captcha（07:00 开放推荐：到点后才解验证码，避免 token 跨天失效）
   bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
-    --court '23号' --times '18:00-19:00' --with-captcha --day-info-mode predict-no-captcha --execute
+    --court '4号' --times '16:00-17:00,17:00-18:00' --with-captcha --day-info-mode predict-no-captcha --execute
 
   # predict-late-check（07:00 实验：提前30s GET+OCR，到点后 CHECK，submit 约 07:00:01）
   bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
-    --court '23号' --times '18:00-19:00' --with-captcha --day-info-mode predict-late-check --execute
+    --court '1号' --times '18:00-19:00' --with-captcha --day-info-mode predict-late-check --execute
 
   # poll（提前解验证码，到点后拉取真实 ID）
   bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
@@ -38,7 +38,12 @@ test-submit.sh 额外支持定时参数：
   bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
     --court '2号' --times '07:00-08:00' --with-captcha --day-info-mode poll-no-captcha --execute
 
-  # 2个时间段
+  # predict-no-captcha + 捡漏重试（推荐：07:00 抢不到时自动等捡漏）
+  # 时间线：07:00 submit 失败 → 等30s → 解验证码 → 再等10s → 每隔1s轮询 day/info → 一旦有空位立即提交，全部售出则提前退出
+  bash test-submit.sh --at "23:53:00" --account lys --date 2026-04-20 \
+    --court '8号' --times '07:00-08:00' --with-captcha --day-info-mode predict-no-captcha \
+    --retry-on-fail --execute
+
   bash test-submit.sh --at "07:00:00" --account lys --date 2026-04-17 \
     --court '23号' --times '18:00-19:00,19:00-20:00' --with-captcha --day-info-mode predict-no-captcha --execute
 

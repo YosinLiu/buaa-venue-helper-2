@@ -41,10 +41,13 @@ const SPACE_ID_MAP_39 = {
   "21号": 147, "22号": 148, "23号": 149, "24号": 150,
 };
 
-// predict 模式 timeId 锚点（每个 venue 独立递增，每天 +15）
+// predict 模式 timeId 锚点（按星期几循环，每个 venue 独立）
+// timeId = mondayBase + ((dayOfWeek + 6) % 7) * 15 + timeOffset
+// dayOfWeek = date.getDay() in Beijing time (Sun=0, Mon=1, ..., Sat=6)
+// timeOffset: 07:00→0, 08:00→1, ..., 21:00→14
 const TIME_ID_ANCHORS = {
-  38: { date: "2026-04-14", firstTimeId: 8703 },
-  39: { date: "2026-04-14", firstTimeId: 9083 },
+  38: { mondayBase: 8688 },  // 周一的 07:00 timeId
+  39: { mondayBase: 9068 },
 };
 
 function getSpaceIdMap(venueSiteId, accountOverride) {
@@ -78,6 +81,17 @@ function printHelp() {
   --with-captcha              提交前获取点选验证码，用 DDDDOCR 校验并填入 captchaVerification
   --captcha-attempts N        验证码识别/校验最多尝试次数，默认 3
   --captcha-offset-px N       [测试用] OCR 识别后将每个点偏移 +N 像素，默认 0（不偏移）
+  --retry-on-fail             首次提交失败（非验证码原因）后，进入捡漏模式：
+                              每隔 N ms 轮询 day/info，发现 status=1 立即提交；
+                              全部目标时段变为 status=4（已售）时提前退出
+  --retry-window-ms N         捡漏最长运行时间上限，默认 200000ms（200s）
+  --retry-captcha-delay-ms N  --at 时间 + N ms 时开始解验证码，默认 90000ms（+90s）
+  --retry-poll-delay-ms N     --at 时间 + N ms 时开始轮询 day/info，默认 120000ms（+2min，即锁单释放时刻）
+  --retry-poll-ms N           day/info 轮询间隔，默认 1000ms
+  --retry-times A,B,C,D       捡漏时搜索的时间段（覆盖 config 里的 retrySlotPreferences），
+                              例如 06:00-07:00,07:00-08:00,08:00-09:00,09:00-10:00
+  --retry-court NAME          捡漏时的场地偏好（可选，不设置则搜索所有场地）
+  --retry-max-slots N         捡漏提交时最多选择的时段数，默认 2
   --min-captcha-age-ms N      验证码从 get 到 submit 的最小间隔，默认 1300ms
   --min-captcha-check-age-ms N  验证码 check 完成到 submit 的最小间隔，默认 700ms
   --captcha-verification VAL  手动填入验证码 check 返回的 captchaVerification
@@ -110,6 +124,14 @@ function parseArgs(argv) {
     minCaptchaAgeMs: 1300,
     minCaptchaCheckAgeMs: 700,
     captchaOffsetPx: 0,
+    retryOnFail: false,
+    retryWindowMs: 200000,
+    retryCaptchaDelayMs: 90000,
+    retryPollDelayMs: 120000,
+    retryPollMs: 1000,
+    retryTimes: [],
+    retryCourt: "",
+    retryMaxSlots: 2,
     captchaVerification: "",
     payloadFile: "",
     venueSiteId: 0,
@@ -149,6 +171,21 @@ function parseArgs(argv) {
     else if (arg.startsWith("--min-captcha-check-age-ms=")) args.minCaptchaCheckAgeMs = Math.max(0, Number(arg.slice("--min-captcha-check-age-ms=".length)) || 0);
     else if (arg === "--captcha-offset-px") args.captchaOffsetPx = Number(argv[++i]) || 0;
     else if (arg.startsWith("--captcha-offset-px=")) args.captchaOffsetPx = Number(arg.slice("--captcha-offset-px=".length)) || 0;
+    else if (arg === "--retry-on-fail") args.retryOnFail = true;
+    else if (arg === "--retry-window-ms") args.retryWindowMs = Math.max(1000, Number(argv[++i]) || 60000);
+    else if (arg.startsWith("--retry-window-ms=")) args.retryWindowMs = Math.max(1000, Number(arg.slice("--retry-window-ms=".length)) || 60000);
+    else if (arg === "--retry-captcha-delay-ms") args.retryCaptchaDelayMs = Math.max(0, Number(argv[++i]) || 0);
+    else if (arg.startsWith("--retry-captcha-delay-ms=")) args.retryCaptchaDelayMs = Math.max(0, Number(arg.slice("--retry-captcha-delay-ms=".length)) || 0);
+    else if (arg === "--retry-poll-delay-ms") args.retryPollDelayMs = Math.max(0, Number(argv[++i]) || 0);
+    else if (arg.startsWith("--retry-poll-delay-ms=")) args.retryPollDelayMs = Math.max(0, Number(arg.slice("--retry-poll-delay-ms=".length)) || 0);
+    else if (arg === "--retry-poll-ms") args.retryPollMs = Math.max(200, Number(argv[++i]) || 1000);
+    else if (arg.startsWith("--retry-poll-ms=")) args.retryPollMs = Math.max(200, Number(arg.slice("--retry-poll-ms=".length)) || 1000);
+    else if (arg === "--retry-times") args.retryTimes = normalizeText(argv[++i]).split(",").map(normalizeText).filter(Boolean);
+    else if (arg.startsWith("--retry-times=")) args.retryTimes = normalizeText(arg.slice("--retry-times=".length)).split(",").map(normalizeText).filter(Boolean);
+    else if (arg === "--retry-court") args.retryCourt = normalizeText(argv[++i]);
+    else if (arg.startsWith("--retry-court=")) args.retryCourt = normalizeText(arg.slice("--retry-court=".length));
+    else if (arg === "--retry-max-slots") args.retryMaxSlots = Math.max(1, Number(argv[++i]) || 2);
+    else if (arg.startsWith("--retry-max-slots=")) args.retryMaxSlots = Math.max(1, Number(arg.slice("--retry-max-slots=".length)) || 2);
     else if (arg === "--account") args.account = normalizeText(argv[++i]);
     else if (arg.startsWith("--account=")) args.account = normalizeText(arg.slice("--account=".length));
     else if (arg === "--date") args.date = normalizeText(argv[++i]);
@@ -360,6 +397,14 @@ function mergeSetCookies(auth, setCookies) {
   return names;
 }
 
+// 给坐标加 ±5px 随机抖动，模拟真实鼠标点击的自然偏差
+function jitterCoords(coordStr, range = 5) {
+  const [x, y] = String(coordStr).split(",").map(Number);
+  const jx = Math.round(x + (Math.random() * 2 - 1) * range);
+  const jy = Math.round(y + (Math.random() * 2 - 1) * range);
+  return `${jx},${jy}`;
+}
+
 function encryptFrontendValue(value) {
   const cipher = crypto.createCipheriv(
     "aes-128-cbc",
@@ -440,6 +485,23 @@ function resolveSlotPreferences(account, args) {
   })).filter((slot) => slot.court && slot.times.length > 0);
 }
 
+function resolveRetrySlotPreferences(account, args) {
+  // 1. CLI --retry-times
+  if (args.retryTimes.length > 0) {
+    const court = args.retryCourt || args.court || "";
+    return [{ court, times: args.retryTimes }];
+  }
+  // 2. config.json account 级别 retrySlotPreferences
+  const retrySlots = Array.isArray(account.retrySlotPreferences) ? account.retrySlotPreferences : [];
+  const parsed = retrySlots.map((slot) => ({
+    court: normalizeText(slot.court),
+    times: Array.isArray(slot.times) ? slot.times.map(normalizeText).filter(Boolean) : [],
+  })).filter((slot) => slot.times.length > 0);
+  if (parsed.length > 0) return parsed;
+  // 3. 回退到普通 slotPreferences
+  return resolveSlotPreferences(account, args);
+}
+
 async function launchProfile(account, args) {
   const userDataDir = path.resolve(process.cwd(), account.userDataDir || ".playwright-profile");
   const executablePath = normalizeText(account.browserExecutablePath);
@@ -502,6 +564,9 @@ async function apiRequest(apiPath, options, auth) {
   const headers = {
     Accept: "application/json, text/plain, */*",
     "Content-Type": "application/x-www-form-urlencoded",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    Origin: DOMAIN_URL,
+    Referer: `${DOMAIN_URL}/venue/venue-reservation/38`,
     "app-key": DEFAULT_APP_KEY,
     timestamp: String(timestamp),
     sign,
@@ -914,11 +979,9 @@ function buildReservationOrder(dayInfo, slotPreferences, targetDate) {
       if (!time) {
         throw new Error(`没有在 day/info 中找到时间: ${desiredTime}`);
       }
-      orderItems.push({
-        spaceId: space.id,
-        timeId: time.id,
-        venueSpaceGroupId: space.venueSpaceGroupId || null,
-      });
+      const item = { spaceId: space.id, timeId: time.id };
+      if (space.venueSpaceGroupId) item.venueSpaceGroupId = space.venueSpaceGroupId;
+      orderItems.push(item);
       const cell = space?.[time.id] || space?.[String(time.id)] || {};
       const fee = Number(cell.orderFee ?? cell.price ?? cell.payFee ?? 0);
       if (Number.isFinite(fee)) orderPrice += fee;
@@ -937,8 +1000,99 @@ function buildReservationOrder(dayInfo, slotPreferences, targetDate) {
   return { orderItems, debug, orderPrice };
 }
 
+// 捡漏重试用：从 day/info 里找任意 status=1 的场地，按目标时段匹配
+// 优先凑齐所有时段；凑不齐时返回已有的（部分提交）
+function findAvailableRetryItems(dayInfo, slotPreferences, targetDate) {
+  const times = Array.isArray(dayInfo?.spaceTimeInfo) ? dayInfo.spaceTimeInfo : [];
+  const spaces = flattenSpaces(dayInfo, targetDate);
+  const result = [];
+  for (const slot of slotPreferences) {
+    for (const desiredTime of slot.times) {
+      const time = findTime(times, desiredTime);
+      if (!time) continue;
+      for (const space of spaces) {
+        const cell = space[String(time.id)];
+        if (cell && cell.reservationStatus === 1 && space.id) {
+          result.push({
+            spaceId: space.id,
+            timeId: time.id,
+            orderFee: Number(cell.orderFee ?? 0),
+            spaceName: cell.spaceName,
+            timeRange: normalizeTimeRange(desiredTime),
+          });
+          break; // 每个时段只取第一个可用场地
+        }
+      }
+    }
+  }
+  return result;
+}
+
+// 从可用捡漏项中选最优子集（最多 maxSlots 个，优先同场地连续时段）
+function selectBestRetryItems(availableItems, maxSlots) {
+  if (availableItems.length <= maxSlots) return availableItems;
+
+  function startHour(item) {
+    const m = item.timeRange.match(/^(\d{2}):(\d{2})/);
+    return m ? Number(m[1]) + Number(m[2]) / 60 : -1;
+  }
+
+  // 按场地分组
+  const bySpace = new Map();
+  for (const item of availableItems) {
+    if (!bySpace.has(item.spaceId)) bySpace.set(item.spaceId, []);
+    bySpace.get(item.spaceId).push(item);
+  }
+
+  // 在每个场地内找最长连续序列
+  let bestRun = [];
+  for (const [, items] of bySpace) {
+    const sorted = [...items].sort((a, b) => startHour(a) - startHour(b));
+    let run = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      if (Math.abs(startHour(sorted[i]) - startHour(sorted[i - 1]) - 1) < 0.01) {
+        run.push(sorted[i]);
+      } else {
+        if (run.length > bestRun.length) bestRun = run;
+        run = [sorted[i]];
+      }
+    }
+    if (run.length > bestRun.length) bestRun = run;
+  }
+
+  if (bestRun.length >= maxSlots) return bestRun.slice(0, maxSlots);
+
+  // 连续序列不够长，用连续的补其他
+  if (bestRun.length > 0) {
+    const used = new Set(bestRun.map((i) => `${i.spaceId}:${i.timeId}`));
+    const rest = availableItems.filter((i) => !used.has(`${i.spaceId}:${i.timeId}`));
+    return [...bestRun, ...rest].slice(0, maxSlots);
+  }
+
+  return availableItems.slice(0, maxSlots);
+}
+
+// 捡漏提前退出：目标的每个时段，在所有场地中均为 status=4（已售），则放弃
+function allTargetSlotsSoldOut(dayInfo, slotPreferences, targetDate) {
+  const times = Array.isArray(dayInfo?.spaceTimeInfo) ? dayInfo.spaceTimeInfo : [];
+  const spaces = flattenSpaces(dayInfo, targetDate);
+  for (const slot of slotPreferences) {
+    for (const desiredTime of slot.times) {
+      const time = findTime(times, desiredTime);
+      if (!time) continue; // 时段不存在，跳过
+      // 若任何场地不是 status=4，说明该时段尚未完全售出
+      const allSold = spaces.every((space) => {
+        const cell = space[String(time.id)];
+        return !cell || cell.reservationStatus === 4;
+      });
+      if (!allSold) return false; // 还有希望
+    }
+  }
+  return true; // 所有目标时段均已售
+}
+
 function reservationTypeForSubmit(account) {
-  const value = Number(account.reservationType ?? -1);
+  const value = account?.reservationType;
   return Number.isFinite(value) ? value : -1;
 }
 
@@ -1003,9 +1157,10 @@ function assemblePayload(account, args, { venueSiteId, targetDate, weekStartDate
     reservationOrderJson: JSON.stringify(orderItems),
     reservationType,
     phone: normalizeText(account.phone),
-    orderPin: encryptFrontendValue(account.submitOrderPin || "100,100"),
+    orderPin: encryptFrontendValue(jitterCoords(account.submitOrderPin || "100,100")),
   };
   if (orderPrice > 0) payload.orderPrice = orderPrice;
+  payload.buddyUids = "";
   if (buddyIds.length > 0) payload.buddyIds = buddyIds.join(",");
   if (args.captchaVerification) payload.captchaVerification = args.captchaVerification;
   return payload;
@@ -1051,10 +1206,11 @@ function predictItems(account, args) {
   const targetDate = args.date || parseConfigDate(account.dateText, account.releaseTime);
   if (!targetDate) throw new Error("predict 模式需要明确日期，请传 --date YYYY-MM-DD");
 
-  const diffDays = Math.round(
-    (new Date(targetDate + "T00:00:00").getTime() - new Date(anchor.date + "T00:00:00").getTime()) / 86400000
-  );
-  const firstTimeId = anchor.firstTimeId + diffDays * 15;
+  // timeId 按星期几循环（服务端 7 天一个周期）
+  const dowBj = new Date(targetDate + "T00:00:00+08:00").getDay(); // Sun=0,Mon=1,...,Sat=6
+  const mondayBase = anchor.mondayBase
+    ?? (anchor.firstTimeId - ((new Date(anchor.date + "T00:00:00+08:00").getDay() + 6) % 7) * 15);
+  const firstTimeId = mondayBase + ((dowBj + 6) % 7) * 15;
 
   const spaceIdMap = getSpaceIdMap(venueSiteId, account.spaceIdMap);
   const slotPreferences = resolveSlotPreferences(account, args);
@@ -1074,8 +1230,8 @@ function predictItems(account, args) {
       const timeId = firstTimeId + timeIndex;
       const price = predictedOrderFee(targetDate, startHour);
       orderPrice += price;
-      orderItems.push({ spaceId, timeId, venueSpaceGroupId: null });
-      slotDebug.push({ court: slot.court, spaceId, time: normalizeTimeRange(timeRange), timeId, orderFee: price, diffDays, firstTimeId });
+      orderItems.push({ spaceId, timeId });
+      slotDebug.push({ court: slot.court, spaceId, time: normalizeTimeRange(timeRange), timeId, orderFee: price, dowBj, firstTimeId });
     }
   }
 
@@ -1447,6 +1603,109 @@ async function main() {
       captchaStartedAt = captcha.captchaStartedAt;
       captchaCheckedAt = captcha.captchaCheckedAt;
     }
+
+    // ─── 捡漏重试：首次失败后在锁单超时窗口内轮询 day/info ────────────────────
+    if (args.retryOnFail && result?.body?.code !== 200
+        && !/验证码/.test(result?.body?.message || "")) {
+      const retryDeadline = (targetSubmitTime > 0 ? targetSubmitTime : Date.now()) + args.retryWindowMs;
+      const retryVenueSiteId = payload.venueSiteId;
+      const retryTargetDate = payload.reservationDate;
+      const retrySlotPrefs = resolveRetrySlotPreferences(account, args);
+      const retryBuddyIds = payload.buddyIds ? payload.buddyIds.split(",").filter(Boolean) : [];
+      const atTime = targetSubmitTime > 0 ? targetSubmitTime : Date.now();
+      log(`\n首次提交失败（${result?.body?.message || "未知原因"}），进入捡漏模式（最长至 ${new Date(atTime + args.retryWindowMs).toLocaleTimeString("zh-CN", { hour12: false })}）...`);
+      const retryTimesDesc = retrySlotPrefs.flatMap((s) => s.times).join(", ");
+      log(`捡漏目标时段: ${retryTimesDesc}（最多提交 ${args.retryMaxSlots} 个）`);
+
+      // 等到 --at 时间 + retryCaptchaDelayMs 再解验证码（绝对时刻，与失败时间无关）
+      const captchaStartAt = atTime + args.retryCaptchaDelayMs;
+      const captchaWait = captchaStartAt - Date.now();
+      if (captchaWait > 0) {
+        log(`等待至 ${new Date(captchaStartAt).toLocaleTimeString("zh-CN", { hour12: false })} 开始解验证码（${Math.ceil(captchaWait / 1000)}s 后）...`);
+        await sleep(captchaWait);
+      }
+
+      // 开始解验证码（异步，后台进行）
+      let captchaPromise = needCaptcha
+        ? resolveCaptchaVerification(account, args, auth, worker).catch((e) => { log(`验证码解析失败: ${e.message}`); return null; })
+        : null;
+
+      // 等到 --at 时间 + retryPollDelayMs 再开始轮询（锁单在整点释放，2min 后才有位置）
+      const pollStartAt = atTime + args.retryPollDelayMs;
+      const pollWait = pollStartAt - Date.now();
+      if (pollWait > 0) {
+        log(`等待至 ${new Date(pollStartAt).toLocaleTimeString("zh-CN", { hour12: false })} 开始轮询（${Math.ceil(pollWait / 1000)}s 后）...`);
+        await sleep(pollWait);
+      }
+
+      let retrySuccess = false;
+      while (Date.now() < retryDeadline) {
+        await sleep(args.retryPollMs);
+        if (Date.now() >= retryDeadline) break;
+
+        const secsLeft = Math.ceil((retryDeadline - Date.now()) / 1000);
+        log(`GET /api/reservation/day/info (捡漏轮询，剩余 ${secsLeft}s)`);
+        let dayInfo;
+        try {
+          const r = await apiRequest("/api/reservation/day/info", {
+            data: { venueSiteId: retryVenueSiteId, searchDate: retryTargetDate, hasReserveInfo: 1 },
+          }, auth);
+          dayInfo = unwrapApiData(r, "/api/reservation/day/info");
+        } catch (e) { log(`day/info 失败: ${e.message}`); continue; }
+
+        const allAvailable = findAvailableRetryItems(dayInfo, retrySlotPrefs, retryTargetDate);
+        const availableItems = selectBestRetryItems(allAvailable, args.retryMaxSlots);
+        if (availableItems.length === 0) {
+          if (allTargetSlotsSoldOut(dayInfo, retrySlotPrefs, retryTargetDate)) {
+            log("所有目标时段均已售出（status=4），停止捡漏");
+            break;
+          }
+          log("暂无可用场地（status≠1），继续等待...");
+          continue;
+        }
+
+        log(`发现可用 ${allAvailable.length} 个时段，选择 ${availableItems.length} 个: ${availableItems.map((i) => `${i.spaceName} ${i.timeRange}`).join(", ")}`);
+
+        // 等验证码（若已就绪直接用，否则等待）
+        let retryCap = captchaPromise ? await captchaPromise : null;
+        if (needCaptcha && !retryCap) {
+          log("验证码未就绪，重新解...");
+          captchaPromise = resolveCaptchaVerification(account, args, auth, worker).catch(() => null);
+          retryCap = await captchaPromise;
+          if (!retryCap) { log("验证码再次失败，跳过本轮"); continue; }
+        }
+
+        const retryWeekStart = normalizeText(
+          Array.isArray(dayInfo.reservationDateList) ? dayInfo.reservationDateList[0] : dayInfo.weekStartDate
+        ) || retryTargetDate;
+        const retryOrderItems = availableItems.map(({ spaceId, timeId }) => ({ spaceId, timeId }));
+        const retryOrderPrice = availableItems.reduce((s, i) => s + i.orderFee, 0);
+        const retryPayload = assemblePayload(account, args, {
+          venueSiteId: retryVenueSiteId, targetDate: retryTargetDate, weekStartDate: retryWeekStart,
+          orderItems: retryOrderItems, orderPrice: retryOrderPrice, buddyIds: retryBuddyIds,
+        });
+        if (retryCap) {
+          retryPayload.captchaVerification = retryCap.captchaVerification;
+          retryPayload.captchaToken = retryCap.captchaToken;
+        }
+
+        log("POST /api/reservation/order/submit (捡漏)");
+        const retryResult = await apiRequest("/api/reservation/order/submit", { method: "POST", data: retryPayload }, auth);
+        log(`捡漏 submit: http=${retryResult.status} (+${retryResult.elapsedMs}ms)`);
+        console.log(retryResult.body ? JSON.stringify(retryResult.body, null, 2) : retryResult.text);
+
+        if (retryResult.body?.code === 200) { retrySuccess = true; break; }
+        // 无论何种失败，captcha 已消耗，立即开始解新的（后台并行）
+        if (needCaptcha) {
+          captchaPromise = resolveCaptchaVerification(account, args, auth, worker).catch(() => null);
+        }
+        if (/未支付/.test(retryResult.body?.message || "")) {
+          log("存在未支付订单，继续等待...");
+        }
+      }
+      if (!retrySuccess) log(`捡漏窗口结束，未能抢到场地`);
+    }
+
   } finally {
     worker?.close();
     if (context) await context.close();
