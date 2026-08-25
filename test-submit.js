@@ -557,7 +557,9 @@ async function apiRequest(apiPath, options, auth) {
   const timestamp = Date.now();
   const data = { ...(options.data || {}) };
   if (method === "GET") {
-    data.nocache = timestamp;
+    // 用 ms*1000 + random(0..999) 提升精度，避免并发 GET 请求 timestamp 同毫秒导致 sign 碰撞
+    // （服务器/网关可能按 sign 去重，会把另一个账号的响应返回过来）
+    data.nocache = timestamp * 1000 + Math.floor(Math.random() * 1000);
   }
   const cleanData = compactScalarData(data);
   const sign = signRequest(timestamp, apiPath, cleanData);
@@ -1280,10 +1282,35 @@ async function main() {
       log("启动浏览器读取登录态...");
       const launched = await launchProfile(account, args);
       context = launched.context;
-      log("浏览器已启动，读取登录态...");
-      const auth = await readAuthFromBrowser(context, launched.page);
-      await saveAuthToFile(account, auth);
-      log("登录态保存完成，退出。");
+      // 先导航到登录页（一次性），然后让用户自己操作
+      await launched.page.goto(`${DOMAIN_URL}/venue/venue-reservation/38`, { waitUntil: "domcontentloaded" }).catch(() => {});
+      log("浏览器已启动并导航到登录页，请在浏览器内完成登录。登录完成后请关闭浏览器（或关闭所有标签页），脚本会自动保存登录态。");
+      // 等用户关闭浏览器。监听 context 和 page 两种 close 事件，任一触发即视为完成。
+      // （某些情况下用户关闭窗口只触发 page.close 而不触发 context.close）
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => { if (!done) { done = true; resolve(); } };
+        context.once("close", finish);
+        launched.page.once("close", finish);
+      });
+      // 给浏览器一点时间清理
+      await sleep(500);
+      try { await context.close(); } catch {}
+      context = null;
+      log("检测到浏览器已关闭，重新读取持久化登录态...");
+      // 用同一 userDataDir headless 重开，读取已保存到磁盘的 cookies/localStorage
+      const launched2 = await launchProfile(account, { ...args, headless: true });
+      try {
+        const auth = await readAuthFromBrowser(launched2.context, launched2.page);
+        await saveAuthToFile(account, auth);
+        if (!auth.cgAuthorization && !auth.dataSixAuth && !auth.cookieCgAuthorization) {
+          log("⚠️ 警告：未检测到登录态 token（cgAuthorization 等都为空），可能未成功登录，请重试。");
+        } else {
+          log("登录态保存完成，退出。");
+        }
+      } finally {
+        await launched2.context.close();
+      }
       return;
     }
 

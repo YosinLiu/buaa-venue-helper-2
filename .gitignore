@@ -11,8 +11,10 @@ memo.txt
 .playwright-profile/
 .playwright-profile-*/
 
-# Generated logs, archives, and debug output.
+# Generated logs, archives, runtime files, and debug output.
 *.log
+*.pid
+nohup.out
 *.tar.gz
 debug-screenshots/
 screenshots/

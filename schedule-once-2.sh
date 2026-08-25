@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
 # 定时启动脚本：计算到目标时刻的等待时间，sleep 后执行命令
-# 用法: nohup bash schedule-once.sh &
-# 日志和 PID 会自动写到 schedule-once-${ACCOUNT}.log / .pid
+# 用法: nohup bash schedule-once-2.sh &
+# 日志和 PID 会自动写到 schedule-once-2-${ACCOUNT}.log / .pid
 
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-ACCOUNT="jlx"
-LOG_FILE="$SCRIPT_DIR/schedule-once-${ACCOUNT}.log"
-PID_FILE="$SCRIPT_DIR/schedule-once-${ACCOUNT}.pid"
+ACCOUNT="zy"
+LOG_FILE="$SCRIPT_DIR/schedule-once-2-${ACCOUNT}.log"
+PID_FILE="$SCRIPT_DIR/schedule-once-2-${ACCOUNT}.pid"
 
 exec >> "$LOG_FILE" 2>&1
 
-TARGET_TIME="06:59:30"
+TARGET_TIME="06:59:32"
 TARGET_DATE="2026-06-19"   # 今晚跑，明早 7 点抢 6/1 的
 
 TARGET_TS=$(date -j -f "%Y-%m-%d %H:%M:%S" "${TARGET_DATE} ${TARGET_TIME}" "+%s")
@@ -34,11 +34,11 @@ sleep "$WAIT"
 
 echo "[$(date '+%H:%M:%S')] 启动 test-submit.sh ..."
 bash "$SCRIPT_DIR/test-submit.sh" \
-  --at "07:00:04" --account "$ACCOUNT" --date 2026-06-21 \
-  --court '6号' --times '10:00-11:00,11:00-12:00' \
+  --at "07:00:03" --account "$ACCOUNT" --date 2026-06-21 \
+  --court '4号' --times '13:00-14:00,14:00-15:00' \
   --with-captcha --day-info-mode predict-no-captcha \
   --retry-on-fail \
-  --retry-times '10:00-11:00,11:00-12:00,14:00-15:00,15:00-16:00,16:00-17:00,17:00-18:00,18:00-19:00,19:00-20:00,20:00-21:00,21:00-22:00' \
+  --retry-times '13:00-14:00,14:00-15:00,16:00-17:00,17:00-18:00,18:00-19:00,19:00-20:00,20:00-21:00,21:00-22:00' \
   --execute
 
 echo "[$(date '+%H:%M:%S')] 完成"
