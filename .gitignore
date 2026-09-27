@@ -1,21 +1,25 @@
 node_modules/
+.venv/
 __pycache__/
 *.py[cod]
 
 # Local credentials, browser state, and personal runtime config.
 config.json
+run-daily.local.sh
 memo.txt
 .env
 .env.*
-*-auth.json
+*-auth.json*
 .playwright-profile/
 .playwright-profile-*/
 
 # Generated logs, archives, runtime files, and debug output.
 *.log
+/logs
 *.pid
 nohup.out
 *.tar.gz
+backups/
 debug-screenshots/
 screenshots/
 captcha-samples/

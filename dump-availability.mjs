@@ -9,7 +9,7 @@ const SIGN_SECRET = "c640ca392cd45fb3a55b00a63a86c618";
 
 const accountName = process.argv[2] || "zd";
 const targetDate = process.argv[3] || "2026-05-29";
-const venueSiteId = 39;
+const venueSiteId = Number(process.argv[4] || 39);
 
 const config = JSON.parse(await fs.readFile("config.json", "utf8"));
 const account = config.accounts.find((a) => a.name === accountName);
@@ -44,12 +44,10 @@ const json = await res.json();
 if (json.code !== 200) { console.log("ERROR", json); process.exit(1); }
 
 const d = json.data;
-console.log("原始响应顶层 keys:", Object.keys(d));
-console.log("data 前 2000 字符:", JSON.stringify(d, null, 2).slice(0, 2000));
-process.exit(0);
-
 // 找出所有时段
-const spaces = d.spaceList || d.reservationOrderJsonList || [];
+const spaces = Array.isArray(d.reservationDateSpaceInfo?.[targetDate])
+  ? d.reservationDateSpaceInfo[targetDate]
+  : (d.spaceList || d.reservationOrderJsonList || []);
 console.log(`场地数: ${spaces.length}`);
 
 // status 含义: 1=可预约, 2=已预约/已售, 3=锁单中, 4=已售完?
@@ -58,10 +56,15 @@ const statusMap = { 1: "✅可订", 2: "🟡已订/锁", 3: "🔒锁单", 4: "�
 const courtAvailability = new Map();  // court -> [{ time, status }]
 for (const sp of spaces) {
   const court = sp.spaceName || sp.venueSpaceName || sp.name;
-  const times = sp.timeList || sp.spaceTimeList || [];
+  const times = Array.isArray(sp.timeList) || Array.isArray(sp.spaceTimeList)
+    ? (sp.timeList || sp.spaceTimeList)
+    : (d.spaceTimeInfo || []).map((time) => ({
+        ...time,
+        ...(sp[String(time.id)] || {}),
+      }));
   for (const t of times) {
     const time = t.beginTime && t.endTime ? `${t.beginTime}-${t.endTime}` : (t.timeName || t.time);
-    const st = t.status ?? t.reservationStatus;
+    const st = t.reservationStatus ?? t.status;
     if (!courtAvailability.has(court)) courtAvailability.set(court, []);
     courtAvailability.get(court).push({ time, status: st, timeId: t.id || t.timeId, fee: t.orderFee });
   }

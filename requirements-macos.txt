@@ -1,0 +1,7 @@
+# macOS / Apple Silicon local captcha runtime.
+# ddddocr is installed separately with --no-deps because it otherwise pins
+# dependencies that conflict with the local CPU-only ONNX Runtime setup.
+onnxruntime>=1.17,<2
+opencv-python-headless<5
+pillow<13
+numpy<3

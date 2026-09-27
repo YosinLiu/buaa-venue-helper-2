@@ -7,14 +7,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-ACCOUNT="zy"
+ACCOUNT="account2"
 LOG_FILE="$SCRIPT_DIR/schedule-once-2-${ACCOUNT}.log"
 PID_FILE="$SCRIPT_DIR/schedule-once-2-${ACCOUNT}.pid"
 
 exec >> "$LOG_FILE" 2>&1
 
 TARGET_TIME="06:59:32"
-TARGET_DATE="2026-06-19"   # 今晚跑，明早 7 点抢 6/1 的
+TARGET_DATE="2026-06-19"   # 模板日期：运行前改为需要启动的日期
 
 TARGET_TS=$(date -j -f "%Y-%m-%d %H:%M:%S" "${TARGET_DATE} ${TARGET_TIME}" "+%s")
 NOW_TS=$(date "+%s")

@@ -18,19 +18,67 @@
   "concurrency": 1,
   "accounts": [
     {
-      "name": "default",
-      "enabled": true,
-      "userDataDir": ".playwright-profile",
+      "name": "account1",
+      "enabled": false,
+      "userDataDir": ".playwright-profile-account1",
       "concurrency": 1,
-      "phone": "YOUR_PHONE",
+      "phone": "ACCOUNT1_PHONE",
       "companions": [
-        "YOUR_COMPANION_NAME"
+        "ACCOUNT1_COMPANION"
+      ],
+      "buddyIds": [
+        12345
+      ],
+      "slotPreferences": [
+        {
+          "court": "1号",
+          "times": [
+            "20:00-21:00",
+            "21:00-22:00"
+          ]
+        }
+      ],
+      "retrySlotPreferences": [
+        {
+          "court": "",
+          "times": [
+            "18:00-19:00",
+            "19:00-20:00",
+            "20:00-21:00",
+            "21:00-22:00"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "account2",
+      "enabled": false,
+      "userDataDir": ".playwright-profile-account2",
+      "concurrency": 1,
+      "phone": "ACCOUNT2_PHONE",
+      "companions": [
+        "ACCOUNT2_COMPANION"
+      ],
+      "buddyIds": [
+        67890
       ],
       "slotPreferences": [
         {
           "court": "2号",
           "times": [
-            "07:00-08:00"
+            "18:00-19:00",
+            "19:00-20:00"
+          ]
+        }
+      ],
+      "retrySlotPreferences": [
+        {
+          "court": "",
+          "times": [
+            "18:00-19:00",
+            "19:00-20:00",
+            "20:00-21:00",
+            "21:00-22:00"
           ]
         }
       ]

@@ -18,6 +18,15 @@ function log(msg) {
   const elapsed = Date.now() - SCRIPT_START;
   console.log(`[${hh}:${mm}:${ss}.${ms} +${elapsed}ms] ${msg}`);
 }
+
+function formatClockWithMs(timestamp) {
+  const d = new Date(timestamp);
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  const ms = String(d.getMilliseconds()).padStart(3, "0");
+  return `${hh}:${mm}:${ss}.${ms}`;
+}
 const CONFIG_PATH = path.resolve(process.cwd(), "config.json");
 const DOMAIN_URL = "https://cgyy.buaa.edu.cn";
 const SERVER_URL = `${DOMAIN_URL}/venue-server`;
@@ -27,6 +36,7 @@ const DEFAULT_AES_KEY = "c1h2i5n6g2o2k4a7";
 const DEFAULT_AES_IV = "C2H3I4N5G2O3K1E4";
 const CAPTCHA_TYPE_CLICK_WORD = "clickWord";
 const CAPTCHA_SUCCESS_CODE = "0000";
+let REQUEST_VENUE_SITE_ID = 38;
 
 // venue-site 38（1-12号）固定 spaceId
 const SPACE_ID_MAP_38 = {
@@ -66,15 +76,15 @@ function sleep(ms) {
 function printHelp() {
   console.log(`
 用法:
-  node test-submit.js --account zxy
-  node test-submit.js --account lys --date 2026-04-15
-  node test-submit.js --account zxy --execute
+  node test-submit.js --account account1
+  node test-submit.js --account account2 --date 2026-04-15
+  node test-submit.js --account account1 --execute
 
 默认只打印将要 POST 的 payload，不会提交。
 只有加 --execute 才会真正 POST 到 /api/reservation/order/submit。
 
 可选参数:
-  --account NAME              账号名，必填，多账号时例如 zxy / lys
+  --account NAME              账号名，必填，多账号时例如 account1 / account2
   --date YYYY-MM-DD           预约日期；默认从 config.json 的 dateText 推导
   --court NAME                覆盖 config 里的场地，例如 6号
   --times A,B                 覆盖 config 里的时间，例如 07:00-08:00,19:00-20:00
@@ -85,20 +95,32 @@ function printHelp() {
                               每隔 N ms 轮询 day/info，发现 status=1 立即提交；
                               全部目标时段变为 status=4（已售）时提前退出
   --retry-window-ms N         捡漏最长运行时间上限，默认 200000ms（200s）
-  --retry-captcha-delay-ms N  --at 时间 + N ms 时开始解验证码，默认 90000ms（+90s）
-  --retry-poll-delay-ms N     --at 时间 + N ms 时开始轮询 day/info，默认 120000ms（+2min，即锁单释放时刻）
+  --retry-captcha-delay-ms N  开始时间 + N ms 时解补抢验证码，默认 90000ms（+90s）
+  --retry-poll-delay-ms N     开始时间 + N ms 时轮询 day/info，默认 120000ms（+2min）
   --retry-poll-ms N           day/info 轮询间隔，默认 1000ms
   --retry-times A,B,C,D       捡漏时搜索的时间段（覆盖 config 里的 retrySlotPreferences），
                               例如 06:00-07:00,07:00-08:00,08:00-09:00,09:00-10:00
   --retry-court NAME          捡漏时的场地偏好（可选，不设置则搜索所有场地）
+  --retry-any-court           补抢时忽略首轮场地，在当前场馆中选择任意可用场地
   --retry-max-slots N         捡漏提交时最多选择的时段数，默认 2
+  --retry-require-all         补抢时要求所有指定时段同时可订，避免部分下单
+  --retry-fallback-single     无同场完整时段时，降级为任意场地的一个目标时段
+  --retry-prefer-consecutive-two  在目标范围内优先任意同场连续两小时，否则任意一个小时
+  --retry-require-consecutive-two  只选任意同场连续两小时，不降级；优先于其他补抢选取选项
+  --retry-submit-attempts N   补抢阶段最多发送 N 次订单请求，默认 1
+  --submit-attempts N         首轮最多发送 N 次订单请求，默认 1
   --min-captcha-age-ms N      验证码从 get 到 submit 的最小间隔，默认 1300ms
   --min-captcha-check-age-ms N  验证码 check 完成到 submit 的最小间隔，默认 700ms
   --captcha-verification VAL  手动填入验证码 check 返回的 captchaVerification
   --payload FILE              直接读取 JSON payload，不自动查 day/info 和 buddies
   --execute                   真的提交；不加时仅 dry-run
+  --timing-test               完整执行到提交前并计时，但绝不发送订单请求
   --headless                  无头打开账号 profile 读取登录态
   --save-auth                 启动浏览器读取登录态并保存到文件后退出（首次使用或登录过期时运行）
+  --start-at TIME             到指定时刻才开始场地查询/验证码流程。支持 HH:MM[:SS] 或完整日期时间
+  --start-offset-ms N         在 --start-at 基础上整体平移 N ms；负数提前、正数延后
+  --server-safety-delay-ms N  服务器校时后的额外启动缓冲，默认 200ms；双账号精确错峰可设为 0
+  --min-flow-duration-ms N    从流程开始到提交至少等待 N ms，默认 6000ms
   --at TIME                   目标提交时间，提前启动做好准备，到点发请求。支持 "HH:MM[:SS]" 或 "YYYY-MM-DD HH:MM[:SS]"
   --captcha-pre-window-ms N   predict/poll 模式下，在 --at 前 N ms 开始解验证码，默认 8000ms。
                               设为 0 表示在 --at 时刻才开始解（避免跨天 07:00 token 失效）
@@ -131,13 +153,25 @@ function parseArgs(argv) {
     retryPollMs: 1000,
     retryTimes: [],
     retryCourt: "",
+    retryAnyCourt: false,
     retryMaxSlots: 2,
+    retryRequireAll: false,
+    retryFallbackSingle: false,
+    retryPreferConsecutiveTwo: false,
+    retryRequireConsecutiveTwo: false,
+    retrySubmitAttempts: 1,
     captchaVerification: "",
     payloadFile: "",
     venueSiteId: 0,
     execute: false,
+    submitAttempts: 1,
+    timingTest: false,
     headless: false,
     saveAuth: false,
+    startAt: "",
+    startOffsetMs: 0,
+    serverSafetyDelayMs: 200,
+    minFlowDurationMs: 6000,
     at: "",
     dayInfoMode: "predict",
     dayInfoPollIntervalMs: 200,
@@ -150,9 +184,18 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") args.help = true;
     else if (arg === "--execute") args.execute = true;
+    else if (arg === "--timing-test") args.timingTest = true;
     else if (arg === "--headless") args.headless = true;
     else if (arg === "--with-captcha") args.withCaptcha = true;
     else if (arg === "--save-auth") args.saveAuth = true;
+    else if (arg === "--start-at") args.startAt = normalizeText(argv[++i]);
+    else if (arg.startsWith("--start-at=")) args.startAt = normalizeText(arg.slice("--start-at=".length));
+    else if (arg === "--start-offset-ms") args.startOffsetMs = Number(argv[++i]) || 0;
+    else if (arg.startsWith("--start-offset-ms=")) args.startOffsetMs = Number(arg.slice("--start-offset-ms=".length)) || 0;
+    else if (arg === "--server-safety-delay-ms") args.serverSafetyDelayMs = Math.max(0, Number(argv[++i]) || 0);
+    else if (arg.startsWith("--server-safety-delay-ms=")) args.serverSafetyDelayMs = Math.max(0, Number(arg.slice("--server-safety-delay-ms=".length)) || 0);
+    else if (arg === "--min-flow-duration-ms") args.minFlowDurationMs = Math.max(0, Number(argv[++i]) || 0);
+    else if (arg.startsWith("--min-flow-duration-ms=")) args.minFlowDurationMs = Math.max(0, Number(arg.slice("--min-flow-duration-ms=".length)) || 0);
     else if (arg === "--at") args.at = normalizeText(argv[++i]);
     else if (arg.startsWith("--at=")) args.at = normalizeText(arg.slice("--at=".length));
     else if (arg === "--day-info-mode") args.dayInfoMode = normalizeText(argv[++i]);
@@ -184,8 +227,17 @@ function parseArgs(argv) {
     else if (arg.startsWith("--retry-times=")) args.retryTimes = normalizeText(arg.slice("--retry-times=".length)).split(",").map(normalizeText).filter(Boolean);
     else if (arg === "--retry-court") args.retryCourt = normalizeText(argv[++i]);
     else if (arg.startsWith("--retry-court=")) args.retryCourt = normalizeText(arg.slice("--retry-court=".length));
+    else if (arg === "--retry-any-court") args.retryAnyCourt = true;
     else if (arg === "--retry-max-slots") args.retryMaxSlots = Math.max(1, Number(argv[++i]) || 2);
     else if (arg.startsWith("--retry-max-slots=")) args.retryMaxSlots = Math.max(1, Number(arg.slice("--retry-max-slots=".length)) || 2);
+    else if (arg === "--retry-require-all") args.retryRequireAll = true;
+    else if (arg === "--retry-fallback-single") args.retryFallbackSingle = true;
+    else if (arg === "--retry-prefer-consecutive-two") args.retryPreferConsecutiveTwo = true;
+    else if (arg === "--retry-require-consecutive-two") args.retryRequireConsecutiveTwo = true;
+    else if (arg === "--retry-submit-attempts") args.retrySubmitAttempts = Math.max(1, Number(argv[++i]) || 1);
+    else if (arg.startsWith("--retry-submit-attempts=")) args.retrySubmitAttempts = Math.max(1, Number(arg.slice("--retry-submit-attempts=".length)) || 1);
+    else if (arg === "--submit-attempts") args.submitAttempts = Math.max(1, Number(argv[++i]) || 1);
+    else if (arg.startsWith("--submit-attempts=")) args.submitAttempts = Math.max(1, Number(arg.slice("--submit-attempts=".length)) || 1);
     else if (arg === "--account") args.account = normalizeText(argv[++i]);
     else if (arg.startsWith("--account=")) args.account = normalizeText(arg.slice("--account=".length));
     else if (arg === "--date") args.date = normalizeText(argv[++i]);
@@ -488,7 +540,7 @@ function resolveSlotPreferences(account, args) {
 function resolveRetrySlotPreferences(account, args) {
   // 1. CLI --retry-times
   if (args.retryTimes.length > 0) {
-    const court = args.retryCourt || args.court || "";
+    const court = args.retryAnyCourt ? "" : (args.retryCourt || args.court || "");
     return [{ court, times: args.retryTimes }];
   }
   // 2. config.json account 级别 retrySlotPreferences
@@ -568,7 +620,7 @@ async function apiRequest(apiPath, options, auth) {
     "Content-Type": "application/x-www-form-urlencoded",
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
     Origin: DOMAIN_URL,
-    Referer: `${DOMAIN_URL}/venue/venue-reservation/38`,
+    Referer: `${DOMAIN_URL}/venue/venue-reservation/${REQUEST_VENUE_SITE_ID}`,
     "app-key": DEFAULT_APP_KEY,
     timestamp: String(timestamp),
     sign,
@@ -629,6 +681,92 @@ async function measureServerClockOffset() {
   // 用请求中点估算服务器时间对应的本机时刻
   const localMid = Math.round((localBefore + localAfter) / 2);
   return serverMs - localMid;
+}
+
+async function readServerClockSample() {
+  if (process.env.BUAA_FORCE_CLOCK_FAILURE === "1") {
+    throw new Error("forced clock calibration failure");
+  }
+  const nonce = `${Date.now()}-${crypto.randomBytes(4).toString("hex")}`;
+  const url = `${DOMAIN_URL}/venue/venue-reservation/${REQUEST_VENUE_SITE_ID}?_clock=${nonce}`;
+  const localBefore = Date.now();
+  const response = await fetch(url, {
+    method: "HEAD",
+    cache: "no-store",
+    signal: AbortSignal.timeout(1500),
+    headers: {
+      "Cache-Control": "no-cache, no-store, max-age=0",
+      Pragma: "no-cache",
+    },
+  });
+  const localAfter = Date.now();
+  const serverDateText = response.headers.get("date");
+  const serverTime = serverDateText ? new Date(serverDateText).getTime() : NaN;
+  if (!Number.isFinite(serverTime)) {
+    throw new Error("预约服务器未返回有效 Date 响应头，拒绝提前获取验证码。");
+  }
+  return {
+    serverTime,
+    serverDateText,
+    localBefore,
+    localAfter,
+    rttMs: localAfter - localBefore,
+    lowerBoundOffsetMs: serverTime - localAfter,
+    midpointOffsetMs: serverTime + 500 - Math.round((localBefore + localAfter) / 2),
+  };
+}
+
+async function calibrateServerClockBefore(targetTime, label = "服务器时间预校准") {
+  // 在首轮目标前一分钟完成一次校准。首轮和补抢均复用结果，不再访问校时地址。
+  const calibrationLeadMs = 60000;
+  const preWaitMs = targetTime - Date.now() - calibrationLeadMs;
+  if (preWaitMs > 0) await sleep(preWaitMs);
+
+  const samples = [];
+  for (let attempt = 1; attempt <= 8; attempt += 1) {
+    // 正常任务在提前一分钟取样；若进程晚启动，最迟保留 2.5 秒安全边界。
+    if (Date.now() >= targetTime - 2500) break;
+    try {
+      samples.push(await readServerClockSample());
+    } catch (error) {
+      log(`${label}第 ${attempt} 次失败: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (attempt < 8) await sleep(180);
+  }
+  if (samples.length === 0) {
+    log(`${label}未取得有效服务器样本；降级使用本机 NTP 时间，任务继续执行。`);
+    return {
+      lowerBoundOffsetMs: 0,
+      midpointOffsetMs: 0,
+      samples: [],
+      fallback: "local-ntp",
+    };
+  }
+
+  // Date 头只有整秒精度。serverTime - localAfter 是服务器偏差的保守下界；
+  // 用所有样本中最大的下界，可以保证推算出的发送时刻不会早于服务器目标时间。
+  const lowerBoundOffsetMs = Math.max(...samples.map((sample) => sample.lowerBoundOffsetMs));
+  const midpointOffsets = samples.map((sample) => sample.midpointOffsetMs).sort((a, b) => a - b);
+  const midpointOffsetMs = midpointOffsets[Math.floor(midpointOffsets.length / 2)];
+  log(`${label}完成：样本=${samples.length}，估计偏差=${midpointOffsetMs}ms，保守下界=${lowerBoundOffsetMs}ms；后续所有时间门复用本结果。`);
+  return { lowerBoundOffsetMs, midpointOffsetMs, samples };
+}
+
+async function waitWithServerCalibration(targetTime, calibration, label = "服务器时间门", safetyDelayMs = 200) {
+  if (!calibration) {
+    log(`${label}缺少服务器校准结果；降级使用本机 NTP 时间。`);
+    calibration = { lowerBoundOffsetMs: 0, midpointOffsetMs: 0, samples: [], fallback: "local-ntp" };
+  }
+  const localReleaseTime = Math.max(
+    targetTime + safetyDelayMs,
+    targetTime + safetyDelayMs - calibration.lowerBoundOffsetMs,
+  );
+  const sourceLabel = calibration.fallback === "local-ntp" ? "本机 NTP 回退" : "首轮服务器预校准";
+  log(`${label}计划本机触发=${formatClockWithMs(localReleaseTime)}（使用${sourceLabel}，不再联网校时）`);
+  const waitMs = localReleaseTime - Date.now();
+  if (waitMs > 0) await sleep(waitMs);
+  log(`${label}通过：按预校准结果已超过目标服务器时间至少 ${safetyDelayMs}ms。`);
+  return { ...calibration, localReleaseTime };
 }
 
 function unwrapApiData(result, label) {
@@ -1002,17 +1140,18 @@ function buildReservationOrder(dayInfo, slotPreferences, targetDate) {
   return { orderItems, debug, orderPrice };
 }
 
-// 捡漏重试用：从 day/info 里找任意 status=1 的场地，按目标时段匹配
-// 优先凑齐所有时段；凑不齐时返回已有的（部分提交）
+// 捡漏重试用：收集所有 status=1 的场地/时段组合。
 function findAvailableRetryItems(dayInfo, slotPreferences, targetDate) {
   const times = Array.isArray(dayInfo?.spaceTimeInfo) ? dayInfo.spaceTimeInfo : [];
   const spaces = flattenSpaces(dayInfo, targetDate);
   const result = [];
   for (const slot of slotPreferences) {
+    const targetCourt = normalizeText(slot.court);
     for (const desiredTime of slot.times) {
       const time = findTime(times, desiredTime);
       if (!time) continue;
       for (const space of spaces) {
+        if (targetCourt && courtLabel(space) !== targetCourt) continue;
         const cell = space[String(time.id)];
         if (cell && cell.reservationStatus === 1 && space.id) {
           result.push({
@@ -1022,7 +1161,6 @@ function findAvailableRetryItems(dayInfo, slotPreferences, targetDate) {
             spaceName: cell.spaceName,
             timeRange: normalizeTimeRange(desiredTime),
           });
-          break; // 每个时段只取第一个可用场地
         }
       }
     }
@@ -1030,9 +1168,72 @@ function findAvailableRetryItems(dayInfo, slotPreferences, targetDate) {
   return result;
 }
 
+// 要求所有目标时段在同一个场地连续可订；场地未指定时选择第一个满足条件的场地。
+function selectCompleteRetryCourt(availableItems, slotPreferences) {
+  const requiredTimes = [...new Set(
+    slotPreferences.flatMap((slot) => slot.times.map(normalizeTimeRange)),
+  )];
+  const bySpace = new Map();
+  for (const item of availableItems) {
+    if (!bySpace.has(item.spaceId)) bySpace.set(item.spaceId, []);
+    bySpace.get(item.spaceId).push(item);
+  }
+  for (const [, items] of bySpace) {
+    const selected = [];
+    for (const targetTime of requiredTimes) {
+      const item = items.find((candidate) => candidate.timeRange === targetTime);
+      if (!item) break;
+      selected.push(item);
+    }
+    if (selected.length === requiredTimes.length) return selected;
+  }
+  return [];
+}
+
+// 在任意场地中优先选择连续两个小时；fallbackSingle=false 时只接受完整两小时。
+function selectPreferredConsecutiveTwo(availableItems, fallbackSingle = true) {
+  function startHour(item) {
+    const match = item.timeRange.match(/^(\d{2}):(\d{2})/);
+    return match ? Number(match[1]) + Number(match[2]) / 60 : -1;
+  }
+
+  const bySpace = new Map();
+  for (const item of availableItems) {
+    if (!fallbackSingle) {
+      const match = item.timeRange.match(/^(\d{2}):(\d{2})-(\d{2}):(\d{2})$/);
+      if (!match || (Number(match[3]) * 60 + Number(match[4]))
+          - (Number(match[1]) * 60 + Number(match[2])) !== 60) continue;
+    }
+    if (!bySpace.has(item.spaceId)) bySpace.set(item.spaceId, []);
+    bySpace.get(item.spaceId).push(item);
+  }
+  for (const [, items] of bySpace) {
+    const sorted = [...items].sort((a, b) => startHour(a) - startHour(b));
+    for (let index = 1; index < sorted.length; index += 1) {
+      if (Math.abs(startHour(sorted[index]) - startHour(sorted[index - 1]) - 1) < 0.01) {
+        return [sorted[index - 1], sorted[index]];
+      }
+    }
+  }
+  return fallbackSingle && availableItems.length > 0 ? [availableItems[0]] : [];
+}
+
 // 从可用捡漏项中选最优子集（最多 maxSlots 个，优先同场地连续时段）
 function selectBestRetryItems(availableItems, maxSlots) {
-  if (availableItems.length <= maxSlots) return availableItems;
+  function selectDistinctTimes(items) {
+    const selected = [];
+    const usedTimes = new Set();
+    for (const item of items) {
+      const timeKey = item.timeRange || item.timeId;
+      if (usedTimes.has(timeKey)) continue;
+      usedTimes.add(timeKey);
+      selected.push(item);
+      if (selected.length >= maxSlots) break;
+    }
+    return selected;
+  }
+
+  if (availableItems.length <= maxSlots) return selectDistinctTimes(availableItems);
 
   function startHour(item) {
     const m = item.timeRange.match(/^(\d{2}):(\d{2})/);
@@ -1064,14 +1265,8 @@ function selectBestRetryItems(availableItems, maxSlots) {
 
   if (bestRun.length >= maxSlots) return bestRun.slice(0, maxSlots);
 
-  // 连续序列不够长，用连续的补其他
-  if (bestRun.length > 0) {
-    const used = new Set(bestRun.map((i) => `${i.spaceId}:${i.timeId}`));
-    const rest = availableItems.filter((i) => !used.has(`${i.spaceId}:${i.timeId}`));
-    return [...bestRun, ...rest].slice(0, maxSlots);
-  }
-
-  return availableItems.slice(0, maxSlots);
+  // 连续序列不够长时补足其他时段，避免同一小时选择多个场地。
+  return selectDistinctTimes([...bestRun, ...availableItems]);
 }
 
 // 捡漏提前退出：目标的每个时段，在所有场地中均为 status=4（已售），则放弃
@@ -1079,11 +1274,15 @@ function allTargetSlotsSoldOut(dayInfo, slotPreferences, targetDate) {
   const times = Array.isArray(dayInfo?.spaceTimeInfo) ? dayInfo.spaceTimeInfo : [];
   const spaces = flattenSpaces(dayInfo, targetDate);
   for (const slot of slotPreferences) {
+    const targetCourt = normalizeText(slot.court);
+    const candidateSpaces = targetCourt
+      ? spaces.filter((space) => courtLabel(space) === targetCourt)
+      : spaces;
     for (const desiredTime of slot.times) {
       const time = findTime(times, desiredTime);
       if (!time) continue; // 时段不存在，跳过
       // 若任何场地不是 status=4，说明该时段尚未完全售出
-      const allSold = spaces.every((space) => {
+      const allSold = candidateSpaces.length > 0 && candidateSpaces.every((space) => {
         const cell = space[String(time.id)];
         return !cell || cell.reservationStatus === 4;
       });
@@ -1127,6 +1326,21 @@ function personName(item) {
 async function resolveBuddyIds(account, auth) {
   const companions = Array.isArray(account.companions) ? account.companions.map(normalizeText).filter(Boolean) : [];
   if (companions.length === 0) return { buddyIds: [], buddyDebug: [] };
+
+  const configuredBuddyIds = Array.isArray(account.buddyIds)
+    ? account.buddyIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0)
+    : [];
+  if (configuredBuddyIds.length > 0) {
+    return {
+      buddyIds: configuredBuddyIds,
+      buddyDebug: companions.map((companion, index) => ({
+        companion,
+        matched: Boolean(configuredBuddyIds[index]),
+        id: configuredBuddyIds[index] || null,
+        source: "config",
+      })),
+    };
+  }
 
   const result = await apiRequest("/api/buddies", { data: { page: -1, size: -1 } }, auth);
   const data = unwrapApiData(result, "/api/buddies");
@@ -1247,20 +1461,44 @@ async function main() {
     return;
   }
   if (!args.account) {
-    throw new Error("请明确指定 --account zxy 或 --account lys，避免误用登录态。");
+    throw new Error("请明确指定 --account account1 或 --account account2，避免误用登录态。");
+  }
+  if (args.timingTest && args.execute) {
+    throw new Error("--timing-test 与 --execute 不能同时使用；计时测试保证不会提交订单。");
+  }
+  if (args.startAt && args.at) {
+    throw new Error("--start-at 与 --at 不能同时使用；整点串行模式只使用 --start-at。");
+  }
+  if (args.startAt && args.dayInfoMode !== "predict") {
+    throw new Error("--start-at 串行模式只支持 --day-info-mode predict，避免开始后查询场地。");
+  }
+  if (args.startAt && !args.withCaptcha && !args.captchaVerification) {
+    throw new Error("--start-at 串行模式必须提供 --with-captcha 或现成的 --captcha-verification。");
   }
 
   const { accounts } = await readConfig();
   const account = selectAccount(accounts, args.account);
+  REQUEST_VENUE_SITE_ID = resolveVenueSiteId(account, args) || 38;
+  log(`请求场馆已切换为 venueSiteId=${REQUEST_VENUE_SITE_ID}（${REQUEST_VENUE_SITE_ID === 39 ? "副馆17-24号" : "主馆1-12号"}）`);
 
-  // Parse --at early to fail fast on bad format
+  // Parse scheduled times early to fail fast on bad format.
+  let targetStartTime = 0;
   let targetSubmitTime = 0;
   let serverClockOffset = 0; // serverTime - localTime（毫秒）
+  if (args.startAt) {
+    targetStartTime = parseTargetTime(args.startAt) + args.startOffsetMs;
+    const secsUntil = Math.round((targetStartTime - Date.now()) / 1000);
+    const offsetLabel = args.startOffsetMs !== 0 ? `，整体偏移 ${args.startOffsetMs > 0 ? "+" : ""}${args.startOffsetMs}ms` : "";
+    log(`目标流程开始时间: ${new Date(targetStartTime).toLocaleString("zh-CN")} ${formatClockWithMs(targetStartTime)}${offsetLabel} (${secsUntil}s 后)`);
+    log("整点模式将在首轮目标前一分钟完成唯一一次服务器预校准；首轮和补抢复用结果，07:00 后不再联网校时。");
+  }
   if (args.at) {
     targetSubmitTime = parseTargetTime(args.at);
     const secsUntil = Math.round((targetSubmitTime - Date.now()) / 1000);
     log(`目标提交时间: ${new Date(targetSubmitTime).toLocaleString("zh-CN")} (${secsUntil}s 后)`);
-    // 测量服务器时钟偏差，用于修正 --at 等待时间
+  }
+  if (targetSubmitTime > 0 && targetStartTime === 0) {
+    // 测量服务器时钟偏差，用于修正定时等待。
     const offset = await measureServerClockOffset();
     if (offset !== null) {
       serverClockOffset = offset;
@@ -1275,6 +1513,9 @@ async function main() {
   let worker = null;
   let captchaStartedAt = 0;
   let captchaCheckedAt = 0;
+  let flowStartedAt = 0;
+  let flowStartedMonotonic = 0;
+  let serverCalibration = null;
 
   try {
     // --save-auth: launch browser, save auth file, exit
@@ -1361,6 +1602,27 @@ async function main() {
     const isNoCaptchaMode = mode === "predict-no-captcha" || mode === "poll-no-captcha";
     const isPredictMode = mode === "predict" || mode === "predict-no-captcha";
 
+    // 整点串行模式：开始前只做本地预热和本地参数计算，不发业务请求。
+    // 场地/timeId 由固定映射推导；buddyIds 优先从本地私有配置读取。
+    let preparedPredictItems = null;
+    let preparedBuddiesResult = null;
+    if (targetStartTime > 0 && isPredictMode) {
+      preparedPredictItems = predictItems(account, args);
+      preparedBuddiesResult = await resolveBuddyIds(account, auth);
+      if (preparedBuddiesResult.buddyDebug.some((item) => item.source !== "config")) {
+        throw new Error("--start-at 串行模式要求在 config.json 中预先配置 buddyIds，避免开始后查询同行人。");
+      }
+      log(`开始前本地准备完成：${preparedPredictItems.slotDebug.map((item) => `${item.court} ${item.time}`).join(", ")}；同行人 ID 已缓存。`);
+    }
+
+    if (targetStartTime > 0) {
+      serverCalibration = await calibrateServerClockBefore(targetStartTime, "首轮服务器预校准");
+      await waitWithServerCalibration(targetStartTime, serverCalibration, "首轮时间门", args.serverSafetyDelayMs);
+    }
+    flowStartedAt = Date.now();
+    flowStartedMonotonic = performance.now();
+    log(`预约流程开始（本机时间 ${formatClockWithMs(flowStartedAt)}，使用首轮预校准结果）`);
+
     let payload, debug;
 
     if (mode === "predict-late-check") {
@@ -1395,7 +1657,7 @@ async function main() {
       console.log("接口:", "/api/reservation/order/submit");
       console.log(`调试信息 (CHECK 将在 --at 后执行，GET+OCR 已在 --at 前 ${args.captchaPreOcrWindowMs}ms 完成):`);
       console.log(JSON.stringify(debug, null, 2));
-      if (!args.execute) {
+      if (!args.execute && !args.timingTest) {
         console.log("DRY-RUN: 未提交。加 --execute 才会真正 POST。");
         return;
       }
@@ -1446,7 +1708,7 @@ async function main() {
       // captcha（延迟）+ buddies 并行；不查 day/info
       const [captchaResult, buddiesResult] = await Promise.all([
         delayedCaptcha,
-        resolveBuddyIds(account, auth),
+        preparedBuddiesResult || resolveBuddyIds(account, auth),
       ]);
       if (captchaResult) {
         captchaStartedAt = captchaResult.captchaStartedAt;
@@ -1455,7 +1717,7 @@ async function main() {
 
       if (isPredictMode) {
         // predict：规则推断 ID，payload 在 --at 前就准备好
-        const items = predictItems(account, args);
+        const items = preparedPredictItems || predictItems(account, args);
         for (const item of items.slotDebug) {
           log(`场地 ${item.court}(spaceId=${item.spaceId}) × ${item.time}(timeId=${item.timeId}) ¥${item.orderFee}`);
         }
@@ -1473,13 +1735,13 @@ async function main() {
         console.log(JSON.stringify(debug, null, 2));
         console.log("payload:");
         console.log(JSON.stringify(payload, null, 2));
-        if (!args.execute) {
+        if (!args.execute && !args.timingTest) {
           console.log("DRY-RUN: 未提交。确认 payload 后加 --execute 才会真正 POST。");
           return;
         }
       } else {
         // poll：buddies 和 captcha 准备好了，等 --at 后再拉 day/info
-        if (!args.execute) {
+        if (!args.execute && !args.timingTest) {
           console.log("DRY-RUN (poll): 到时间后将轮询 day/info 并提交。加 --execute 才会真正执行。");
           return;
         }
@@ -1518,12 +1780,12 @@ async function main() {
       // 验证码在 07:00 之后才取，避免跨天 token 失效
 
       // buddies 立即拉取
-      const buddiesResult = await resolveBuddyIds(account, auth);
+      const buddiesResult = preparedBuddiesResult || await resolveBuddyIds(account, auth);
       const buddyIds = buddiesResult.buddyIds;
 
       if (isPredictMode) {
         // predict-no-captcha：规则推断 ID，--at 前就可以组装 payload（无 captchaVerification）
-        const items = predictItems(account, args);
+        const items = preparedPredictItems || predictItems(account, args);
         for (const item of items.slotDebug) {
           log(`场地 ${item.court}(spaceId=${item.spaceId}) × ${item.time}(timeId=${item.timeId}) ¥${item.orderFee}`);
         }
@@ -1536,12 +1798,12 @@ async function main() {
         console.log(JSON.stringify(debug, null, 2));
         console.log("payload (captchaVerification 将在 --at 后填入):");
         console.log(JSON.stringify(payload, null, 2));
-        if (!args.execute) {
+        if (!args.execute && !args.timingTest) {
           console.log("DRY-RUN: 未提交。加 --execute 才会真正 POST。");
           return;
         }
       } else {
-        if (!args.execute) {
+        if (!args.execute && !args.timingTest) {
           console.log("DRY-RUN (poll-no-captcha): 到时间后并行拉验证码和场地信息。加 --execute 才会真正执行。");
           return;
         }
@@ -1592,7 +1854,7 @@ async function main() {
     }
 
     // 提交循环（三种模式共用）
-    const submitAttempts = args.withCaptcha ? args.captchaAttempts : 1;
+    const submitAttempts = args.submitAttempts;
     let result;
     for (let submitAttempt = 1; submitAttempt <= submitAttempts; submitAttempt++) {
       // Timing gate (naturally 0ms when --at provides sufficient lead time)
@@ -1603,10 +1865,24 @@ async function main() {
       if (captchaCheckedAt && args.minCaptchaCheckAgeMs > 0) {
         waitUntil = Math.max(waitUntil, captchaCheckedAt + args.minCaptchaCheckAgeMs);
       }
-      const waitMs = Math.max(0, waitUntil - Date.now());
+      const wallClockWaitMs = Math.max(0, waitUntil - Date.now());
+      const monotonicElapsedMs = flowStartedMonotonic ? performance.now() - flowStartedMonotonic : 0;
+      const flowWaitMs = flowStartedMonotonic && args.minFlowDurationMs > 0
+        ? Math.max(0, args.minFlowDurationMs - monotonicElapsedMs)
+        : 0;
+      const waitMs = Math.max(wallClockWaitMs, flowWaitMs);
       if (waitMs > 0) {
-        log(`等待验证码 token 稳定: ${waitMs}ms`);
+        log(`等待安全提交门槛: ${waitMs}ms（最短流程 ${args.minFlowDurationMs}ms）`);
         await sleep(waitMs);
+      }
+
+      const flowElapsedBeforeSubmit = flowStartedMonotonic
+        ? Math.round(performance.now() - flowStartedMonotonic)
+        : (flowStartedAt ? Date.now() - flowStartedAt : 0);
+      log(`已到提交门槛：流程耗时 ${flowElapsedBeforeSubmit}ms`);
+      if (args.timingTest) {
+        console.log(`TIMING-TEST: 已完整走到提交前，流程耗时 ${flowElapsedBeforeSubmit}ms；未发送订单请求。`);
+        return;
       }
 
       log("POST /api/reservation/order/submit");
@@ -1615,6 +1891,12 @@ async function main() {
         data: payload,
       }, auth);
       log(`submit 完成: http=${result.status} (+${result.elapsedMs}ms)`);
+      if (flowStartedMonotonic || flowStartedAt) {
+        const responseElapsedMs = flowStartedMonotonic
+          ? Math.round(performance.now() - flowStartedMonotonic)
+          : Date.now() - flowStartedAt;
+        log(`订单响应时总流程耗时: ${responseElapsedMs}ms`);
+      }
       console.log(result.body ? JSON.stringify(result.body, null, 2) : result.text);
 
       if (!args.withCaptcha || result?.body?.code !== 250) break;
@@ -1634,40 +1916,38 @@ async function main() {
     // ─── 捡漏重试：首次失败后在锁单超时窗口内轮询 day/info ────────────────────
     if (args.retryOnFail && result?.body?.code !== 200
         && !/验证码/.test(result?.body?.message || "")) {
-      const retryDeadline = (targetSubmitTime > 0 ? targetSubmitTime : Date.now()) + args.retryWindowMs;
+      const retryBaseTime = targetStartTime > 0
+        ? targetStartTime
+        : (targetSubmitTime > 0 ? targetSubmitTime - serverClockOffset : Date.now());
+      const retryDeadline = retryBaseTime + args.retryWindowMs;
       const retryVenueSiteId = payload.venueSiteId;
       const retryTargetDate = payload.reservationDate;
       const retrySlotPrefs = resolveRetrySlotPreferences(account, args);
       const retryBuddyIds = payload.buddyIds ? payload.buddyIds.split(",").filter(Boolean) : [];
-      const atTime = targetSubmitTime > 0 ? targetSubmitTime : Date.now();
+      const atTime = retryBaseTime;
       log(`\n首次提交失败（${result?.body?.message || "未知原因"}），进入捡漏模式（最长至 ${new Date(atTime + args.retryWindowMs).toLocaleTimeString("zh-CN", { hour12: false })}）...`);
       const retryTimesDesc = retrySlotPrefs.flatMap((s) => s.times).join(", ");
-      log(`捡漏目标时段: ${retryTimesDesc}（最多提交 ${args.retryMaxSlots} 个）`);
+      log(`捡漏目标时段: ${retryTimesDesc}（${args.retryRequireConsecutiveTwo ? "须同场连续两小时，不降级" : `最多提交 ${args.retryMaxSlots} 个`}）`);
 
-      // 等到 --at 时间 + retryCaptchaDelayMs 再解验证码（绝对时刻，与失败时间无关）
+      // 等到开始时间 + retryCaptchaDelayMs 再解验证码（按服务器时钟校准）。
       const captchaStartAt = atTime + args.retryCaptchaDelayMs;
-      const captchaWait = captchaStartAt - Date.now();
-      if (captchaWait > 0) {
-        log(`等待至 ${new Date(captchaStartAt).toLocaleTimeString("zh-CN", { hour12: false })} 开始解验证码（${Math.ceil(captchaWait / 1000)}s 后）...`);
-        await sleep(captchaWait);
-      }
+      await waitWithServerCalibration(captchaStartAt, serverCalibration, "补抢验证码时间门", 200);
 
       // 开始解验证码（异步，后台进行）
       let captchaPromise = needCaptcha
         ? resolveCaptchaVerification(account, args, auth, worker).catch((e) => { log(`验证码解析失败: ${e.message}`); return null; })
         : null;
 
-      // 等到 --at 时间 + retryPollDelayMs 再开始轮询（锁单在整点释放，2min 后才有位置）
+      // 等到开始时间 + retryPollDelayMs 再开始轮询（按服务器时钟校准）。
       const pollStartAt = atTime + args.retryPollDelayMs;
-      const pollWait = pollStartAt - Date.now();
-      if (pollWait > 0) {
-        log(`等待至 ${new Date(pollStartAt).toLocaleTimeString("zh-CN", { hour12: false })} 开始轮询（${Math.ceil(pollWait / 1000)}s 后）...`);
-        await sleep(pollWait);
-      }
+      await waitWithServerCalibration(pollStartAt, serverCalibration, "补抢轮询时间门", 200);
 
       let retrySuccess = false;
+      let retrySubmitCount = 0;
+      let firstRetryPoll = true;
       while (Date.now() < retryDeadline) {
-        await sleep(args.retryPollMs);
+        if (!firstRetryPoll) await sleep(args.retryPollMs);
+        firstRetryPoll = false;
         if (Date.now() >= retryDeadline) break;
 
         const secsLeft = Math.ceil((retryDeadline - Date.now()) / 1000);
@@ -1681,13 +1961,32 @@ async function main() {
         } catch (e) { log(`day/info 失败: ${e.message}`); continue; }
 
         const allAvailable = findAvailableRetryItems(dayInfo, retrySlotPrefs, retryTargetDate);
-        const availableItems = selectBestRetryItems(allAvailable, args.retryMaxSlots);
+        let availableItems = args.retryRequireConsecutiveTwo || args.retryPreferConsecutiveTwo
+          ? selectPreferredConsecutiveTwo(allAvailable, !args.retryRequireConsecutiveTwo)
+          : (args.retryRequireAll
+            ? selectCompleteRetryCourt(allAvailable, retrySlotPrefs)
+            : selectBestRetryItems(allAvailable, args.retryMaxSlots));
+        if (!args.retryRequireConsecutiveTwo && args.retryPreferConsecutiveTwo && availableItems.length === 1) {
+          log(`没有任意同场连续两小时，降级为单时段：${availableItems[0].spaceName} ${availableItems[0].timeRange}`);
+        }
+        const requiredSlotCount = retrySlotPrefs.reduce((sum, slot) => sum + slot.times.length, 0);
+        if (!args.retryRequireConsecutiveTwo && !args.retryPreferConsecutiveTwo && args.retryRequireAll && availableItems.length < requiredSlotCount) {
+          if (args.retryFallbackSingle && allAvailable.length > 0) {
+            availableItems = [allAvailable[0]];
+            log(`没有同场连续 ${requiredSlotCount} 个时段，降级为单时段：${availableItems[0].spaceName} ${availableItems[0].timeRange}`);
+          } else {
+            log(`目标时段尚未全部释放（${availableItems.length}/${requiredSlotCount}），继续等待...`);
+            continue;
+          }
+        }
         if (availableItems.length === 0) {
           if (allTargetSlotsSoldOut(dayInfo, retrySlotPrefs, retryTargetDate)) {
             log("所有目标时段均已售出（status=4），停止捡漏");
             break;
           }
-          log("暂无可用场地（status≠1），继续等待...");
+          log(args.retryRequireConsecutiveTwo
+            ? "暂无任意同场连续两小时，继续等待..."
+            : "暂无可用场地（status≠1），继续等待...");
           continue;
         }
 
@@ -1717,11 +2016,16 @@ async function main() {
         }
 
         log("POST /api/reservation/order/submit (捡漏)");
+        retrySubmitCount += 1;
         const retryResult = await apiRequest("/api/reservation/order/submit", { method: "POST", data: retryPayload }, auth);
         log(`捡漏 submit: http=${retryResult.status} (+${retryResult.elapsedMs}ms)`);
         console.log(retryResult.body ? JSON.stringify(retryResult.body, null, 2) : retryResult.text);
 
         if (retryResult.body?.code === 200) { retrySuccess = true; break; }
+        if (retrySubmitCount >= args.retrySubmitAttempts) {
+          log(`补抢订单请求已达到上限 ${args.retrySubmitAttempts} 次，停止补抢。`);
+          break;
+        }
         // 无论何种失败，captcha 已消耗，立即开始解新的（后台并行）
         if (needCaptcha) {
           captchaPromise = resolveCaptchaVerification(account, args, auth, worker).catch(() => null);

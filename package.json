@@ -9,7 +9,8 @@
     "label": "node label_captchas.js",
     "reserve": "node reserve.js",
     "inspect": "node reserve.js --inspect",
-    "inspect:headless": "node reserve.js --inspect --headless"
+    "inspect:headless": "node reserve.js --inspect --headless",
+    "test": "node tests/retry-selection.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
