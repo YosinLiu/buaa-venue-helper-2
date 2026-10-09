@@ -16,6 +16,7 @@ SECONDARY_COURT="2号"
 SECONDARY_TIMES="18:00-19:00,19:00-20:00"
 # 两个账号均在晚间窗口内补抢任意场地的连续两小时。
 RETRY_TIMES="18:00-19:00,19:00-20:00,20:00-21:00,21:00-22:00"
+RETRY_ANY_COURT=1
 MIN_FLOW_DURATION_MS=5900
 SERVER_SAFETY_DELAY_MS=0
 
@@ -44,8 +45,13 @@ if [[ "${1:-}" == "--check" ]]; then
   echo "服务器时间额外缓冲: ${SERVER_SAFETY_DELAY_MS}ms"
   echo "最短流程门槛: ${MIN_FLOW_DURATION_MS}ms"
   echo "预约日期: $TARGET_DATE"
-  echo "账号1补抢: 主馆任意场地（1-12号）${RETRY_TIMES}，窗口内选同场连续两小时"
-  echo "账号2补抢: 主馆任意场地（1-12号）${RETRY_TIMES}，窗口内选同场连续两小时"
+  if [[ "$RETRY_ANY_COURT" == "1" ]]; then
+    echo "账号1补抢: 主馆任意场地（1-12号）${RETRY_TIMES}，窗口内选同场连续两小时"
+    echo "账号2补抢: 主馆任意场地（1-12号）${RETRY_TIMES}，窗口内选同场连续两小时"
+  else
+    echo "账号1补抢: 主馆${PRIMARY_COURT}场 ${RETRY_TIMES}，窗口内选同场连续两小时"
+    echo "账号2补抢: 主馆${SECONDARY_COURT}场 ${RETRY_TIMES}，窗口内选同场连续两小时"
+  fi
   echo "日志: $LOG_DIR/formal-${RUN_DATE}-<账号>.log"
   exit 0
 fi
@@ -97,6 +103,12 @@ run_account() {
   local court="$3"
   local times="$4"
   local log_file="$LOG_DIR/formal-${RUN_DATE}-${account}.log"
+  local retry_scope_args=()
+  if [[ "$RETRY_ANY_COURT" == "1" ]]; then
+    retry_scope_args=(--retry-any-court)
+  else
+    retry_scope_args=(--retry-court "$court")
+  fi
 
   if ! account_is_ready "$account"; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] 跳过账号 $account：账号未启用、预约资料不完整或登录态缺失。" >> "$log_file"
@@ -112,7 +124,11 @@ run_account() {
     echo "预计最早发单: $START_AT + $((start_offset_ms + MIN_FLOW_DURATION_MS))ms"
     echo "最短流程门槛: ${MIN_FLOW_DURATION_MS}ms"
     echo "预约目标: ${TARGET_DATE}，首轮 主馆${court}场 ${times}"
-    echo "补抢: 首轮基准 +90s 验证码；+120s 在主馆任意场地（1-12号）${RETRY_TIMES}，窗口内选同场连续两小时"
+    if [[ "$RETRY_ANY_COURT" == "1" ]]; then
+      echo "补抢: 首轮基准 +90s 验证码；+120s 在主馆任意场地（1-12号）${RETRY_TIMES}，窗口内选同场连续两小时"
+    else
+      echo "补抢: 首轮基准 +90s 验证码；+120s 在主馆${court}场 ${RETRY_TIMES}，窗口内选同场连续两小时"
+    fi
   } >> "$log_file"
 
   /usr/bin/caffeinate -dims bash "$SCRIPT_DIR/test-submit.sh" \
@@ -134,7 +150,7 @@ run_account() {
     --retry-window-ms 200000 \
     --retry-poll-ms 3000 \
     --retry-times "$RETRY_TIMES" \
-    --retry-any-court \
+    "${retry_scope_args[@]}" \
     --retry-max-slots 2 \
     --retry-require-consecutive-two \
     --retry-submit-attempts 1 \
