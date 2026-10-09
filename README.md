@@ -260,7 +260,7 @@ bash run-daily.sh --check
 
 ### 4.4 捡漏重试（--retry-on-fail）
 
-07:00 首轮没抢到时自动等待「锁单释放」捡漏：首次提交失败（非验证码原因）后，等待到锁单释放时刻开始每隔 1s 轮询 `day/info`，一旦出现空位（`status=1`）立即提交；所有目标时段都售罄（`status=4`）则提前退出。
+07:00 首轮没抢到时自动等待「锁单释放」捡漏：首次提交失败（非验证码原因）后，等待到锁单释放时刻开始每隔 3s 轮询 `day/info`，一旦出现空位（`status=1`）立即提交；所有目标时段都售罄（`status=4`）则提前退出。接口返回 `408`（访问频繁）时立即停止轮询和补抢，避免继续放大限流。
 
 ```bash
 bash test-submit.sh --at "07:00:00" --account <账号名> --date 2026-04-20 \
@@ -271,7 +271,7 @@ bash test-submit.sh --at "07:00:00" --account <账号名> --date 2026-04-20 \
   --execute
 ```
 
-相关参数：`--retry-window-ms`（从首轮基准起算的窗口截止时间，默认 200s，并非开始轮询后再运行 200s）、`--retry-poll-ms`（轮询间隔，默认 1s）、`--retry-times`（捡漏搜索的时段）、`--retry-court`（限定场地）、`--retry-max-slots`（最多选几个时段）。
+相关参数：`--retry-window-ms`（从首轮基准起算的窗口截止时间，默认 200s，并非开始轮询后再运行 200s）、`--retry-poll-ms`（轮询间隔，默认 3s）、`--retry-times`（捡漏搜索的时段）、`--retry-court`（限定场地）、`--retry-max-slots`（最多选几个时段）。
 
 `--retry-require-consecutive-two` 要求补抢必须选到同场连续两个一小时时段；配合 `--retry-max-slots 2` 可在较宽的搜索窗口内只订完整两小时，没有合适组合时继续等待。旧参数 `--retry-prefer-consecutive-two` 仅表示优先选择同场连续两小时，其原有通用选择行为不变，未找到连续两小时会降级为一个小时，不等同于严格要求两小时。
 

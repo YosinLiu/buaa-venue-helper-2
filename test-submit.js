@@ -97,7 +97,7 @@ function printHelp() {
   --retry-window-ms N         捡漏最长运行时间上限，默认 200000ms（200s）
   --retry-captcha-delay-ms N  开始时间 + N ms 时解补抢验证码，默认 90000ms（+90s）
   --retry-poll-delay-ms N     开始时间 + N ms 时轮询 day/info，默认 120000ms（+2min）
-  --retry-poll-ms N           day/info 轮询间隔，默认 1000ms
+  --retry-poll-ms N           day/info 轮询间隔，默认 3000ms
   --retry-times A,B,C,D       捡漏时搜索的时间段（覆盖 config 里的 retrySlotPreferences），
                               例如 06:00-07:00,07:00-08:00,08:00-09:00,09:00-10:00
   --retry-court NAME          捡漏时的场地偏好（可选，不设置则搜索所有场地）
@@ -150,7 +150,7 @@ function parseArgs(argv) {
     retryWindowMs: 200000,
     retryCaptchaDelayMs: 90000,
     retryPollDelayMs: 120000,
-    retryPollMs: 1000,
+    retryPollMs: 3000,
     retryTimes: [],
     retryCourt: "",
     retryAnyCourt: false,
@@ -221,8 +221,8 @@ function parseArgs(argv) {
     else if (arg.startsWith("--retry-captcha-delay-ms=")) args.retryCaptchaDelayMs = Math.max(0, Number(arg.slice("--retry-captcha-delay-ms=".length)) || 0);
     else if (arg === "--retry-poll-delay-ms") args.retryPollDelayMs = Math.max(0, Number(argv[++i]) || 0);
     else if (arg.startsWith("--retry-poll-delay-ms=")) args.retryPollDelayMs = Math.max(0, Number(arg.slice("--retry-poll-delay-ms=".length)) || 0);
-    else if (arg === "--retry-poll-ms") args.retryPollMs = Math.max(200, Number(argv[++i]) || 1000);
-    else if (arg.startsWith("--retry-poll-ms=")) args.retryPollMs = Math.max(200, Number(arg.slice("--retry-poll-ms=".length)) || 1000);
+    else if (arg === "--retry-poll-ms") args.retryPollMs = Math.max(200, Number(argv[++i]) || 3000);
+    else if (arg.startsWith("--retry-poll-ms=")) args.retryPollMs = Math.max(200, Number(arg.slice("--retry-poll-ms=".length)) || 3000);
     else if (arg === "--retry-times") args.retryTimes = normalizeText(argv[++i]).split(",").map(normalizeText).filter(Boolean);
     else if (arg.startsWith("--retry-times=")) args.retryTimes = normalizeText(arg.slice("--retry-times=".length)).split(",").map(normalizeText).filter(Boolean);
     else if (arg === "--retry-court") args.retryCourt = normalizeText(argv[++i]);
@@ -723,15 +723,18 @@ async function calibrateServerClockBefore(targetTime, label = "服务器时间�
   if (preWaitMs > 0) await sleep(preWaitMs);
 
   const samples = [];
-  for (let attempt = 1; attempt <= 8; attempt += 1) {
+  const maxAttempts = 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    // 成功后立即停止，最多只在首次失败时再试一次，避免校时请求本身触发限流。
     // 正常任务在提前一分钟取样；若进程晚启动，最迟保留 2.5 秒安全边界。
     if (Date.now() >= targetTime - 2500) break;
     try {
       samples.push(await readServerClockSample());
+      break;
     } catch (error) {
       log(`${label}第 ${attempt} 次失败: ${error instanceof Error ? error.message : String(error)}`);
     }
-    if (attempt < 8) await sleep(180);
+    if (attempt < maxAttempts) await sleep(180);
   }
   if (samples.length === 0) {
     log(`${label}未取得有效服务器样本；降级使用本机 NTP 时间，任务继续执行。`);
@@ -778,6 +781,13 @@ function unwrapApiData(result, label) {
     throw new Error(`${label} 返回 code=${body.code}: ${body.message || body.msg || JSON.stringify(body).slice(0, 200)}`);
   }
   return body.data ?? body;
+}
+
+function isRateLimited(value) {
+  const body = value?.body;
+  const code = body?.code ?? value?.code;
+  const message = [body?.message, body?.msg, value?.message].filter(Boolean).join(" ");
+  return String(code) === "408" || /访问频繁|限制访问/.test(message);
 }
 
 function captchaRepOk(data) {
@@ -1407,6 +1417,9 @@ async function pollForDayInfo(account, args, auth) {
       }
       return { venueSiteId, targetDate, weekStartDate, orderItems, orderPrice, slotDebug };
     } catch (err) {
+      if (isRateLimited(err)) {
+        throw new Error(`day/info 被服务器限流，停止轮询: ${err.message}`);
+      }
       if (attempt >= 50) throw new Error(`day/info 轮询超时（50次）: ${err.message}`);
       log(`day/info 暂无数据，${pollInterval}ms 后重试: ${err.message}`);
       await sleep(pollInterval);
@@ -1914,7 +1927,9 @@ async function main() {
     }
 
     // ─── 捡漏重试：首次失败后在锁单超时窗口内轮询 day/info ────────────────────
-    if (args.retryOnFail && result?.body?.code !== 200
+    if (isRateLimited(result)) {
+      log("订单接口返回访问频繁，停止后续验证码、轮询和补抢请求。");
+    } else if (args.retryOnFail && result?.body?.code !== 200
         && !/验证码/.test(result?.body?.message || "")) {
       const retryBaseTime = targetStartTime > 0
         ? targetStartTime
@@ -1958,7 +1973,14 @@ async function main() {
             data: { venueSiteId: retryVenueSiteId, searchDate: retryTargetDate, hasReserveInfo: 1 },
           }, auth);
           dayInfo = unwrapApiData(r, "/api/reservation/day/info");
-        } catch (e) { log(`day/info 失败: ${e.message}`); continue; }
+        } catch (e) {
+          log(`day/info 失败: ${e.message}`);
+          if (isRateLimited(e)) {
+            log("检测到服务器限流，停止补抢轮询，不再继续发送请求。");
+            break;
+          }
+          continue;
+        }
 
         const allAvailable = findAvailableRetryItems(dayInfo, retrySlotPrefs, retryTargetDate);
         let availableItems = args.retryRequireConsecutiveTwo || args.retryPreferConsecutiveTwo

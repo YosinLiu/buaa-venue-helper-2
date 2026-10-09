@@ -39,7 +39,7 @@ test-submit.sh 额外支持定时参数：
     --court '2号' --times '07:00-08:00' --with-captcha --day-info-mode poll-no-captcha --execute
 
   # predict-no-captcha + 捡漏重试（推荐：07:00 抢不到时自动等捡漏）
-  # 时间线：07:00 submit 失败 → 等30s → 解验证码 → 再等10s → 每隔1s轮询 day/info → 一旦有空位立即提交，全部售出则提前退出
+  # 时间线：07:00 submit 失败 → 等30s → 解验证码 → 再等10s → 每隔3s轮询 day/info → 一旦有空位立即提交，全部售出则提前退出
   bash test-submit.sh --at "23:53:00" --account lys --date 2026-04-20 \
     --court '8号' --times '07:00-08:00' --with-captcha --day-info-mode predict-no-captcha \
     --retry-on-fail --execute

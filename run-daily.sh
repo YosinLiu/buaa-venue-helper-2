@@ -132,7 +132,7 @@ run_account() {
     --retry-captcha-delay-ms 90000 \
     --retry-poll-delay-ms 120000 \
     --retry-window-ms 200000 \
-    --retry-poll-ms 1000 \
+    --retry-poll-ms 3000 \
     --retry-times "$RETRY_TIMES" \
     --retry-any-court \
     --retry-max-slots 2 \
