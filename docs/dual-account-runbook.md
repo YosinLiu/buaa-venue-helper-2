@@ -10,10 +10,10 @@
 
 只调整第二天要抢的场地和时段时，按以下顺序操作：
 
-1. 编辑源码目录私有文件 `run-daily.local.sh` 中的 `PRIMARY_COURT`、`PRIMARY_TIMES`、`SECONDARY_COURT` 和 `SECONDARY_TIMES`；三个账号的补抢共同使用 `RETRY_TIMES`，当前为 `18:00–22:00`。
+1. 编辑源码目录私有文件 `run-daily.local.sh` 中三个账号的场地及时段；当前 zxy 为 1 号场 18:00–20:00，BY2402114 为 2 号场 20:00–22:00，jyt 为 3 号场 20:00–22:00，三个账号的补抢共同使用 `RETRY_TIMES`，当前为 `18:00–22:00`。
 2. 把同样的首轮目标写入 `config.json` 对应账号的 `slotPreferences`，并同步各自的 `retrySlotPreferences` 搜索窗口。
 3. 执行 `bash run-daily.sh --check`，确认账号、场地、时段和自动计算的预约日期。
-4. 执行三账号 `--timing-test`，确认首轮场地 `spaceId/timeId`、2000/2300/2600ms 错峰和 5900ms 门槛（此演练不进入失败后的补抢分支）；不要加 `--execute`。
+4. 执行三账号 `--timing-test`，确认首轮场地 `spaceId/timeId`、2000/2300/2600ms 错峰和 4000ms 门槛（此演练不进入失败后的补抢分支）；不要加 `--execute`。
 5. 备份并同步到 `~/Library/Application Support/buaa-venue-helper-2-runtime/`。
 6. 进入 runtime 再执行一次 `bash run-daily.sh --check`。
 
@@ -24,7 +24,7 @@
 生产任务的调用关系：
 
 ```text
-launchd（前一晚 23:50）
+launchd（每天 06:50）
   └─ run-daily.sh
       ├─ test-submit.js --account account1 --start-offset-ms 2000
       │   └─ 独立 DDDDOCR worker
@@ -142,7 +142,7 @@ SECONDARY_TIMES="18:00-19:00,19:00-20:00"
 
 RETRY_TIMES="18:00-19:00,19:00-20:00,20:00-21:00,21:00-22:00"
 
-MIN_FLOW_DURATION_MS=5900
+MIN_FLOW_DURATION_MS=4000
 SERVER_SAFETY_DELAY_MS=0
 ```
 
@@ -152,23 +152,23 @@ SERVER_SAFETY_DELAY_MS=0
 
 同时把相同的首轮偏好写入 `config.json` 的各账号 `slotPreferences`，并将三个账号的 `retrySlotPreferences` 搜索时段都设置为 `18:00–22:00`，使手工运行和定时运行的偏好保持一致。手工补抢也要传入下述严格连续两小时参数。
 
-当前本机策略为：zxy 首轮主馆 2 号场 `18:00–20:00`，BY2402114 首轮主馆 2 号场 `20:00–22:00`，jyt 首轮主馆 2 号场 `18:00–20:00`。脚本前一晚启动，次日 07:00 执行，预约日期按流程日后两天计算。
+当前本机策略为：zxy 首轮主馆 1 号场 `18:00–20:00`，BY2402114 首轮主馆 2 号场 `20:00–22:00`，jyt 首轮主馆 3 号场 `20:00–22:00`。脚本每天 06:50 启动，等待当天 07:00 执行，预约日期按运行日后两天计算。
 
 正式脚本让三个账号共用 `RETRY_TIMES`，传入 `--retry-times "$RETRY_TIMES" --retry-any-court --retry-max-slots 2 --retry-require-consecutive-two`。第二轮可在主馆 1–12 号场中换场，并从 `18:00–22:00` 中选择同场连续两小时：`18:00–20:00`、`19:00–21:00` 或 `20:00–22:00`。没有合适组合时继续轮询，直到达到退出条件；每个账号只订两小时，不订满四小时，也不降级为一小时。此配置不使用 `--retry-require-all`、`--retry-prefer-consecutive-two` 或 `--retry-fallback-single`。
 
 新参数 `--retry-require-consecutive-two` 是严格要求同场连续两小时。旧参数 `--retry-prefer-consecutive-two` 的通用行为保持不变，它会在没有连续两小时的情况下降级为一个小时，不用于保证当前补抢的完整两小时要求。
 
-## 4. 5.9 秒门槛的含义
+## 4. 4 秒提交门槛的含义
 
 当前时间线：
 
 ```text
-zxy: 07:00:02.000 开始验证码流程 → 约 07:00:07.900 发单
-BY2402114: 07:00:02.300 开始验证码流程 → 约 07:00:08.200 发单
-jyt: 07:00:02.600 开始验证码流程 → 约 07:00:08.500 发单
+zxy: 07:00:02.000 开始验证码流程 → 约 07:00:06.000 发单
+BY2402114: 07:00:02.300 开始验证码流程 → 约 07:00:06.300 发单
+jyt: 07:00:02.600 开始验证码流程 → 约 07:00:06.600 发单
 ```
 
-以上是名义时间。实际流程起点还会受到服务器 Date 头秒级精度、网络 RTT 和保守下界校准影响。当前三个流程的配置错峰为 2000/2300/2600ms；实际差值仍会受各自校时和调度影响，而不是每次都精确到单毫秒。
+以上是名义时间。当前跳过服务器 Date 校准，实际流程起点仍会受本机调度、网络 RTT 和验证码接口响应影响；配置错峰为 2000/2300/2600ms，不保证每次都精确到单毫秒。
 
 历史 6000ms 门槛样本：
 
@@ -181,9 +181,9 @@ jyt: 07:00:02.600 开始验证码流程 → 约 07:00:08.500 发单
 | 网络响应附加耗时范围 | 119–1136ms |
 | 最近 7 次响应平均 | 6319.3ms |
 
-选择 5900ms 的理由：历史最快响应附加耗时为 119ms，预计最快结果约为 6019ms。若设置为 5800ms，最快结果可能约 5919ms；5500ms 风险更高。
+当前本机改用 4000ms，是为了让三个账号在 07:00:07 前发出请求：按 07:00:02.000、02.300、02.600 的验证码流程起点，名义发单时间约为 06.000、06.300、06.600。该设置不保证收到响应时已超过 6 秒。
 
-注意：这只是历史经验值，不能严格保证响应一定晚于 6 秒。如果这是不可违反的硬条件，应使用 `MIN_FLOW_DURATION_MS=6000` 或更高。若服务器、网络或规则发生变化，应重新统计日志后调整。
+如果服务器、网络或规则发生变化，应重新统计日志后调整参数。
 
 重新评估时至少统计：
 
@@ -204,16 +204,16 @@ bash run-daily.sh --check
 
 - 三个账号
 - 各自首轮场地、时段和错峰
-- 启动阶段校准一次服务器时间
-- 5900ms 门槛
+- 跳过服务器时间校准，使用本机 NTP 时间
+- 4000ms 门槛
 - 自动计算的预约日期
 - 补抢范围
 
-该命令不会预约，也不验证登录或账号资料是否完整。日期按次日 07:00 的流程日计算。
+该命令不会预约，也不验证登录或账号资料是否完整。日期按运行当天 07:00 的流程日计算。
 
 ### 5.2 手工启动正式任务
 
-通常不需要手工运行，launchd 会在前一晚 23:50 启动并等待次日 07:00。如果需要手工运行：
+通常不需要手工运行，launchd 会在每天 06:50 启动并等待当天 07:00。如果需要手工运行：
 
 ```bash
 mkdir -p logs
@@ -238,7 +238,7 @@ LaunchAgent 命名示例（已有部署请使用实际安装的 Label）：
 ~/Library/LaunchAgents/com.example.buaa-venue.daily.plist
 ```
 
-它每天前一晚 23:50 调用：
+它每天 06:50 调用：
 
 ```text
 ~/Library/Application Support/buaa-venue-helper-2-runtime/run-daily.sh
@@ -306,19 +306,28 @@ TARGET_DATE="$(date -v+2d '+%Y-%m-%d')"
 RETRY_TIMES="18:00-19:00,19:00-20:00,20:00-21:00,21:00-22:00"
 
 bash test-submit.sh \
-  --start-at "$START_AT" --start-offset-ms 0 \
-  --server-safety-delay-ms 0 --min-flow-duration-ms 5900 \
+  --start-at "$START_AT" --start-offset-ms 2000 \
+  --server-safety-delay-ms 0 --min-flow-duration-ms 4000 \
   --account account1 --date "$TARGET_DATE" \
-  --venue-site-id 38 --court '1号' --times '20:00-21:00,21:00-22:00' \
+  --venue-site-id 38 --court '1号' --times '18:00-19:00,19:00-20:00' \
   --retry-times "$RETRY_TIMES" --retry-any-court \
   --retry-max-slots 2 --retry-require-consecutive-two \
   --with-captcha --day-info-mode predict --timing-test &
 
 bash test-submit.sh \
-  --start-at "$START_AT" --start-offset-ms 300 \
-  --server-safety-delay-ms 0 --min-flow-duration-ms 5900 \
+  --start-at "$START_AT" --start-offset-ms 2300 \
+  --server-safety-delay-ms 0 --min-flow-duration-ms 4000 \
   --account account2 --date "$TARGET_DATE" \
-  --venue-site-id 38 --court '2号' --times '18:00-19:00,19:00-20:00' \
+  --venue-site-id 38 --court '2号' --times '20:00-21:00,21:00-22:00' \
+  --retry-times "$RETRY_TIMES" --retry-any-court \
+  --retry-max-slots 2 --retry-require-consecutive-two \
+  --with-captcha --day-info-mode predict --timing-test &
+
+bash test-submit.sh \
+  --start-at "$START_AT" --start-offset-ms 2600 \
+  --server-safety-delay-ms 0 --min-flow-duration-ms 4000 \
+  --account account3 --date "$TARGET_DATE" \
+  --venue-site-id 38 --court '3号' --times '20:00-21:00,21:00-22:00' \
   --retry-times "$RETRY_TIMES" --retry-any-court \
   --retry-max-slots 2 --retry-require-consecutive-two \
   --with-captcha --day-info-mode predict --timing-test &
@@ -332,7 +341,7 @@ wait
 预约流程开始
 OCR 完成
 captcha/check 完成
-已到提交门槛：流程耗时约 5900ms（验证码较慢时可更长）
+已到提交门槛：流程耗时约 4000ms（验证码较慢时可更长）
 TIMING-TEST ... 未发送订单请求
 ```
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 每日正式任务入口，由 launchd 在前一晚 23:50 启动。
+# 每日正式任务入口，由 launchd 在 06:50 启动，等待到 07:00 再开始验证码流程。
 
 set -euo pipefail
 
@@ -35,9 +35,8 @@ fi
 export PATH="${NODE_BIN_DIR:+$NODE_BIN_DIR:}/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
 
 RUN_DATE="$(date '+%Y-%m-%d')"
-START_DATE="$(date -v+1d '+%Y-%m-%d')"
-START_AT="${START_DATE} 07:00:00"
-TARGET_DATE="$(date -j -f '%Y-%m-%d' -v+2d "$START_DATE" '+%Y-%m-%d')"
+START_AT="${RUN_DATE} 07:00:00"
+TARGET_DATE="$(date -v+2d '+%Y-%m-%d')"
 LOG_DIR="$SCRIPT_DIR/logs"
 PID_FILE="$SCRIPT_DIR/formal-daily-multi.pid"
 CHILD_PIDS=()
@@ -52,8 +51,8 @@ if [[ "${1:-}" == "--check" ]]; then
   echo "  首轮: 主馆${SECONDARY_COURT}场 ${SECONDARY_TIMES}"
   echo "账号3: ${TERTIARY_ACCOUNT}（验证码/流程错峰 +${TERTIARY_START_OFFSET_MS}ms）"
   echo "  首轮: 主馆${TERTIARY_COURT}场 ${TERTIARY_TIMES}"
-  echo "脚本启动: 前一晚 23:50；目标开始时间: $START_AT"
-  echo "服务器时间校准: 脚本启动时执行一次"
+  echo "脚本启动: 06:50；目标开始时间: $START_AT"
+  echo "服务器时间校准: 已禁用，使用本机 NTP 时间"
   echo "服务器时间额外缓冲: ${SERVER_SAFETY_DELAY_MS}ms"
   echo "最短流程门槛: ${MIN_FLOW_DURATION_MS}ms"
   if [[ "$RETRY_ON_FAIL" == "1" ]]; then
@@ -164,7 +163,7 @@ run_account() {
   /usr/bin/caffeinate -dims bash "$SCRIPT_DIR/test-submit.sh" \
     --start-at "$START_AT" \
     --start-offset-ms "$start_offset_ms" \
-    --calibrate-at-start \
+    --skip-clock-calibration \
     --server-safety-delay-ms "$SERVER_SAFETY_DELAY_MS" \
     --min-flow-duration-ms "$MIN_FLOW_DURATION_MS" \
     --account "$account" \

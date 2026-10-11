@@ -120,6 +120,7 @@ function printHelp() {
   --start-at TIME             到指定时刻才开始场地查询/验证码流程。支持 HH:MM[:SS] 或完整日期时间
   --start-offset-ms N         在 --start-at 基础上整体平移 N ms；负数提前、正数延后
   --calibrate-at-start        在脚本启动时校准服务器时间；不等到目标时间前一分钟
+  --skip-clock-calibration    跳过服务器时间校准，直接使用本机 NTP 时间
   --server-safety-delay-ms N  服务器校时后的额外启动缓冲，默认 200ms；双账号精确错峰可设为 0
   --min-flow-duration-ms N    从流程开始到提交至少等待 N ms，默认 6000ms
   --at TIME                   目标提交时间，提前启动做好准备，到点发请求。支持 "HH:MM[:SS]" 或 "YYYY-MM-DD HH:MM[:SS]"
@@ -172,6 +173,7 @@ function parseArgs(argv) {
     startAt: "",
     startOffsetMs: 0,
     calibrateAtStart: false,
+    skipClockCalibration: false,
     serverSafetyDelayMs: 200,
     minFlowDurationMs: 6000,
     at: "",
@@ -195,6 +197,7 @@ function parseArgs(argv) {
     else if (arg === "--start-offset-ms") args.startOffsetMs = Number(argv[++i]) || 0;
     else if (arg.startsWith("--start-offset-ms=")) args.startOffsetMs = Number(arg.slice("--start-offset-ms=".length)) || 0;
     else if (arg === "--calibrate-at-start") args.calibrateAtStart = true;
+    else if (arg === "--skip-clock-calibration") args.skipClockCalibration = true;
     else if (arg === "--server-safety-delay-ms") args.serverSafetyDelayMs = Math.max(0, Number(argv[++i]) || 0);
     else if (arg.startsWith("--server-safety-delay-ms=")) args.serverSafetyDelayMs = Math.max(0, Number(arg.slice("--server-safety-delay-ms=".length)) || 0);
     else if (arg === "--min-flow-duration-ms") args.minFlowDurationMs = Math.max(0, Number(argv[++i]) || 0);
@@ -1507,9 +1510,11 @@ async function main() {
     const secsUntil = Math.round((targetStartTime - Date.now()) / 1000);
     const offsetLabel = args.startOffsetMs !== 0 ? `，整体偏移 ${args.startOffsetMs > 0 ? "+" : ""}${args.startOffsetMs}ms` : "";
     log(`目标流程开始时间: ${new Date(targetStartTime).toLocaleString("zh-CN")} ${formatClockWithMs(targetStartTime)}${offsetLabel} (${secsUntil}s 后)`);
-    log(args.calibrateAtStart
-      ? "夜间启动模式将在脚本启动阶段完成唯一一次服务器预校准；首轮和补抢复用结果，目标时间后不再联网校时。"
-      : "整点模式将在首轮目标前一分钟完成唯一一次服务器预校准；首轮和补抢复用结果，目标时间后不再联网校时。");
+    log(args.skipClockCalibration
+      ? "已跳过服务器时间校准，使用本机 NTP 时间；目标时间后不再联网校时。"
+      : args.calibrateAtStart
+        ? "夜间启动模式将在脚本启动阶段完成唯一一次服务器预校准；首轮和补抢复用结果，目标时间后不再联网校时。"
+        : "整点模式将在首轮目标前一分钟完成唯一一次服务器预校准；首轮和补抢复用结果，目标时间后不再联网校时。");
   }
   if (args.at) {
     targetSubmitTime = parseTargetTime(args.at);
@@ -1635,12 +1640,22 @@ async function main() {
     }
 
     if (targetStartTime > 0) {
-      serverCalibration = await calibrateServerClockBefore(targetStartTime, "首轮服务器预校准", { atStart: args.calibrateAtStart });
+      if (args.skipClockCalibration) {
+        serverCalibration = {
+          lowerBoundOffsetMs: 0,
+          midpointOffsetMs: 0,
+          samples: [],
+          fallback: "local-ntp",
+        };
+        log("已跳过首轮服务器预校准，时间门使用本机 NTP 时间。");
+      } else {
+        serverCalibration = await calibrateServerClockBefore(targetStartTime, "首轮服务器预校准", { atStart: args.calibrateAtStart });
+      }
       await waitWithServerCalibration(targetStartTime, serverCalibration, "首轮时间门", args.serverSafetyDelayMs);
     }
     flowStartedAt = Date.now();
     flowStartedMonotonic = performance.now();
-    log(`预约流程开始（本机时间 ${formatClockWithMs(flowStartedAt)}，使用首轮预校准结果）`);
+    log(`预约流程开始（本机时间 ${formatClockWithMs(flowStartedAt)}，${args.skipClockCalibration ? "使用本机 NTP 时间" : "使用首轮预校准结果"}）`);
 
     let payload, debug;
 

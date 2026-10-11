@@ -35,7 +35,7 @@ git diff 78085b9 -- README.md docs/ test-submit.js run-daily.sh run-daily.local.
 
 ### `run-daily.sh`
 
-每日生产调度入口，由 launchd 在前一晚 23:50 执行，并等待次日 07:00。Git 基线没有该文件。
+每日生产调度入口，由 launchd 在每天 06:50 执行，并等待当天 07:00。Git 基线没有该文件。
 
 新增能力：
 
@@ -43,9 +43,9 @@ git diff 78085b9 -- README.md docs/ test-submit.js run-daily.sh run-daily.local.
 - 每账号独立场地、时段、日志和登录态。
 - 三个账号分别以 2000/2300/2600ms 错峰。
 - 账号资料不完整或 auth 缺失时自动跳过。
-- 分账号配置首轮场地与时段，三个账号共用晚间 18:00–22:00 补抢窗口并要求同场连续两小时；统一配置 5900ms 门槛和 server safety delay。
+- 分账号配置首轮场地与时段，三个账号共用晚间 18:00–22:00 补抢窗口并要求同场连续两小时；当前本机配置 4000ms 门槛和 0ms server safety delay。
 - PID 防重入、退出清理和 07:00:15 后拒绝迟到执行。
-- 默认使用匿名账号 `account1/account2/account3`；真实账号、Node.js 路径及可选的日常参数从被忽略的 `run-daily.local.sh` 加载，示例见 `run-daily.local.example.sh`。夜间启动时各账号使用 `--calibrate-at-start`。
+- 默认使用匿名账号 `account1/account2/account3`；真实账号、Node.js 路径及可选的日常参数从被忽略的 `run-daily.local.sh` 加载，示例见 `run-daily.local.example.sh`。每日任务使用 `--skip-clock-calibration`，避免校时请求触发限流。
 
 ### `requirements-macos.txt`
 
@@ -63,7 +63,7 @@ git diff 78085b9 -- README.md docs/ test-submit.js run-daily.sh run-daily.local.
 
 - `--start-at`
 - `--start-offset-ms`
-- `--calibrate-at-start`：在夜间脚本启动阶段校准一次服务器时间，首轮和补抢复用结果。
+- `--skip-clock-calibration`：每日任务跳过服务器时间校准，首轮和补抢直接使用本机 NTP 时间。
 - `--server-safety-delay-ms`
 - `--min-flow-duration-ms`
 - `--timing-test`
@@ -90,9 +90,9 @@ git diff 78085b9 -- README.md docs/ test-submit.js run-daily.sh run-daily.local.
 - 保守偏差下界
 - 请求 RTT
 
-首轮和补抢复用同一次校准，07:00 后不再为校时额外请求服务器。如果所有样本失败，降级到本机系统时间并在日志中记录“本机 NTP 回退”。脚本本身不请求 NTP 服务器；使用该回退的前提是 macOS 已开启网络时间同步。任一接口返回 `408`（访问频繁）时停止后续轮询、验证码和补抢请求。
+当前每日任务使用 `--skip-clock-calibration`，首轮和补抢都直接使用本机 NTP 时间，不再发送服务器校时请求。使用本机时间的前提是 macOS 已开启网络时间同步。任一接口返回 `408`（访问频繁）时停止后续轮询、验证码和补抢请求。
 
-### 2.3 5900ms 提交门槛
+### 2.3 提交时间门槛
 
 Git 基线没有“流程开始到提交”的硬门槛。增强版用 monotonic clock 保证门槛不受系统时间跳变影响。
 
@@ -107,7 +107,7 @@ Git 基线没有“流程开始到提交”的硬门槛。增强版用 monotonic
 | 网络附加耗时最短 | 119ms |
 | 网络附加耗时最长 | 1136ms |
 
-当前生产值设为 5900ms。按历史最快网络耗时，预计最快响应约为 6019ms。5800ms 或 5500ms 可能让结果早于 6 秒，因此没有采用。
+历史生产值曾设为 5900ms；当前本机改为 4000ms，以满足三个账号都在 07:00:07 前发单的要求。按现有错峰，名义提交时间约为 07:00:06.000、06.300、06.600。
 
 ### 2.4 多账号错峰
 
@@ -155,7 +155,7 @@ Git 基线没有“流程开始到提交”的硬门槛。增强版用 monotonic
 - `--retry-submit-attempts`
 - `--submit-attempts`
 
-当前本机策略为：zxy 主馆 2 号场 18:00–20:00，BY2402114 主馆 2 号场 20:00–22:00，jyt 主馆 2 号场 18:00–20:00；脚本前一晚启动，次日 07:00 执行，预约日期按流程日后两天计算。
+当前本机策略为：zxy 主馆 1 号场 18:00–20:00，BY2402114 主馆 2 号场 20:00–22:00，jyt 主馆 3 号场 20:00–22:00；脚本每天 06:50 启动，等待当天 07:00 执行，预约日期按运行日后两天计算。
 
 本地生产配置在首轮失败后：
 
