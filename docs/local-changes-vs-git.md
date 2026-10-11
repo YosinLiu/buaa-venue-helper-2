@@ -1,6 +1,6 @@
 # 增强版与历史 Git 基线差异
 
-[返回 README](../README.md) · [双账号运行手册](dual-account-runbook.md)
+[返回 README](../README.md) · [多账号运行手册](dual-account-runbook.md)
 
 本文初始记录于 2026-09-23，更新于 2026-09-27。比较基线固定为历史提交 `78085b9`（`add account helpers + debug tools, expand README into full manual`），描述此后纳入仓库的生产增强。它不是“当前未提交修改”清单；提交或推送后仍使用这个历史基线比较：
 
@@ -17,17 +17,17 @@ git diff 78085b9 -- README.md docs/ test-submit.js run-daily.sh run-daily.local.
 | 状态 | 文件 | 作用 |
 | --- | --- | --- |
 | 修改 | `.gitignore` | 忽略 `.venv`、auth 备份、日志目录和 runtime 备份 |
-| 修改 | `README.md` | 增加整点模式、双账号、timing-test 和部署说明 |
-| 修改 | `config.example.json` | 改为无真实凭据的双账号示例 |
+| 修改 | `README.md` | 增加整点模式、多账号、timing-test 和部署说明 |
+| 修改 | `config.example.json` | 改为无真实凭据的多账号示例 |
 | 修改 | `dump-availability.mjs` | 支持命令行指定场馆并解析当前 day/info 数据结构 |
 | 修改 | `schedule-once.sh` | 改为整点串行、单次提交和补抢模板 |
 | 修改 | `schedule-once-2.sh` | 旧定时模板的默认账号改为匿名示例 |
 | 修改 | `package.json` | 增加 `npm test` 离线回归检查入口 |
 | 新增 | `tests/retry-selection.cjs` | 检查严格连续两小时、同一时段去重及提交参数互斥 |
 | 修改 | `test-submit.js` | 增加校时、门槛、错峰、双场馆、补抢选择和详细日志 |
-| 新增 | `run-daily.sh` / `run-daily.local.example.sh` | launchd 双账号入口与私有本机覆盖配置模板 |
+| 新增 | `run-daily.sh` / `run-daily.local.example.sh` | launchd 多账号入口与私有本机覆盖配置模板 |
 | 新增 | `requirements-macos.txt` | macOS OCR 依赖记录 |
-| 新增 | `docs/*.md` | 双账号手册和 Git 差异说明 |
+| 新增 | `docs/*.md` | 多账号手册和 Git 差异说明 |
 
 `config.json`、账号 auth/profile、日志与 runtime 备份属于私有运行数据，由 `.gitignore` 默认忽略，不应纳入 Git。
 
@@ -35,17 +35,17 @@ git diff 78085b9 -- README.md docs/ test-submit.js run-daily.sh run-daily.local.
 
 ### `run-daily.sh`
 
-每日生产调度入口，由 launchd 每天 06:50 执行。Git 基线没有该文件。
+每日生产调度入口，由 launchd 在前一晚 23:50 执行，并等待次日 07:00。Git 基线没有该文件。
 
 新增能力：
 
-- 同时启动两个账号的独立 `test-submit.js` 进程。
+- 同时启动三个账号的独立 `test-submit.js` 进程。
 - 每账号独立场地、时段、日志和登录态。
-- 第二账号整体错峰 300ms。
+- 三个账号分别以 2000/2300/2600ms 错峰。
 - 账号资料不完整或 auth 缺失时自动跳过。
-- 分账号配置首轮场地与时段，两个账号共用晚间 18:00–22:00 补抢窗口并要求同场连续两小时；统一配置 5900ms 门槛和 server safety delay。
+- 分账号配置首轮场地与时段，三个账号共用晚间 18:00–22:00 补抢窗口并要求同场连续两小时；统一配置 5900ms 门槛和 server safety delay。
 - PID 防重入、退出清理和 07:00:15 后拒绝迟到执行。
-- 默认使用匿名账号 `account1/account2`；真实账号、Node.js 路径及可选的日常参数从被忽略的 `run-daily.local.sh` 加载，示例见 `run-daily.local.example.sh`。
+- 默认使用匿名账号 `account1/account2/account3`；真实账号、Node.js 路径及可选的日常参数从被忽略的 `run-daily.local.sh` 加载，示例见 `run-daily.local.example.sh`。夜间启动时各账号使用 `--calibrate-at-start`。
 
 ### `requirements-macos.txt`
 
@@ -63,6 +63,7 @@ git diff 78085b9 -- README.md docs/ test-submit.js run-daily.sh run-daily.local.
 
 - `--start-at`
 - `--start-offset-ms`
+- `--calibrate-at-start`：在夜间脚本启动阶段校准一次服务器时间，首轮和补抢复用结果。
 - `--server-safety-delay-ms`
 - `--min-flow-duration-ms`
 - `--timing-test`
@@ -108,12 +109,14 @@ Git 基线没有“流程开始到提交”的硬门槛。增强版用 monotonic
 
 当前生产值设为 5900ms。按历史最快网络耗时，预计最快响应约为 6019ms。5800ms 或 5500ms 可能让结果早于 6 秒，因此没有采用。
 
-### 2.4 双账号错峰
+### 2.4 多账号错峰
 
-两个进程使用相同的 `--start-at`，第二个进程额外传：
+三个进程使用相同的 `--start-at`，分别传入 2000/2300/2600ms 错峰：
 
 ```text
---start-offset-ms 300
+账号1：--start-offset-ms 2000
+账号2：--start-offset-ms 2300
+账号3：--start-offset-ms 2600
 ```
 
 该偏移会同时影响：
@@ -125,7 +128,7 @@ Git 基线没有“流程开始到提交”的硬门槛。增强版用 monotonic
 - 补抢轮询时间门
 - 补抢窗口截止时间
 
-实际 timing-test 中两个流程起点通常相差约 240–466ms，配置目标为 300ms，实际差值还受各自校时和调度影响。
+实际流程起点仍会受各自校时和调度影响；当前验证码起点配置为 07:00:02.000、07:00:02.300、07:00:02.600。
 
 ### 2.5 本地 buddyId 预缓存
 
@@ -152,13 +155,13 @@ Git 基线没有“流程开始到提交”的硬门槛。增强版用 monotonic
 - `--retry-submit-attempts`
 - `--submit-attempts`
 
-当前持续生效的策略（最近沿用示例：`2026-09-27 07:00` 抢 `2026-09-29`）为：账号 1 首轮选择主馆 1 号场 `20:00–22:00`，账号 2 首轮选择主馆 2 号场 `18:00–20:00`。每日脚本按运行日期加两天计算预约日期，这些场地和时段会持续生效，直到再次修改。
+当前本机策略为：zxy 主馆 2 号场 18:00–20:00，BY2402114 主馆 2 号场 20:00–22:00，jyt 主馆 2 号场 18:00–20:00；脚本前一晚启动，次日 07:00 执行，预约日期按流程日后两天计算。
 
 本地生产配置在首轮失败后：
 
 1. 首轮基准 +90s 获取补抢验证码。
 2. +120s 开始轮询 `day/info`。
-3. 两个账号共用 `RETRY_TIMES="18:00-19:00,19:00-20:00,20:00-21:00,21:00-22:00"`，以 `--retry-times "$RETRY_TIMES"` 搜索主馆任意 1–12 号场。
+3. 三个账号共用 `RETRY_TIMES="18:00-19:00,19:00-20:00,20:00-21:00,21:00-22:00"`，以 `--retry-times "$RETRY_TIMES"` 搜索主馆任意 1–12 号场。
 4. 使用 `--retry-any-court --retry-max-slots 2 --retry-require-consecutive-two`，只选择同场连续两小时（`18:00–20:00`、`19:00–21:00` 或 `20:00–22:00`）。没有合适组合时继续轮询，直到达到退出条件；不订满四小时，不降级为一小时。正式配置不使用 `--retry-require-all`、`--retry-prefer-consecutive-two` 或 `--retry-fallback-single`。
 5. 首轮和补抢订单请求各限制为一次；补抢窗口从各账号首轮基准起算，最迟在 +200s 截止，并非轮询开始后再持续 200s。全体目标时段均已售出时可提前退出。
 
@@ -211,7 +214,7 @@ Git 基线主要面向单账号。本地生产版由两个独立 Node 进程分�
 
 ### `README.md`
 
-增加整点模式、双账号、timing-test、launchd 部署和增强版说明。示例账号及个人路径匿名化，私有参数放入本机覆盖配置。
+增加整点模式、多账号、timing-test、launchd 部署和增强版说明。示例账号及个人路径匿名化，私有参数放入本机覆盖配置。
 
 ## 5. 本地生产部署与 Git 工作树的区别
 

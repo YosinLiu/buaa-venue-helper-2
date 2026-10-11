@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 每日正式任务入口，由 launchd 在 06:50 启动。
+# 每日正式任务入口，由 launchd 在前一晚 23:50 启动。
 
 set -euo pipefail
 
@@ -8,15 +8,23 @@ cd "$SCRIPT_DIR"
 
 PRIMARY_ACCOUNT="account1"
 SECONDARY_ACCOUNT="account2"
+TERTIARY_ACCOUNT="account3"
 PRIMARY_START_OFFSET_MS=0
 SECONDARY_START_OFFSET_MS=300
+TERTIARY_START_OFFSET_MS=600
 PRIMARY_COURT="1号"
 PRIMARY_TIMES="20:00-21:00,21:00-22:00"
 SECONDARY_COURT="2号"
 SECONDARY_TIMES="18:00-19:00,19:00-20:00"
+TERTIARY_COURT="2号"
+TERTIARY_TIMES="18:00-19:00,19:00-20:00"
 # 两个账号均在晚间窗口内补抢任意场地的连续两小时。
 RETRY_TIMES="18:00-19:00,19:00-20:00,20:00-21:00,21:00-22:00"
 RETRY_ANY_COURT=1
+# 补抢轮询默认采用保守频率；本机可在 run-daily.local.sh 覆盖。
+RETRY_ON_FAIL=1
+RETRY_POLL_MS=15000
+RETRY_WINDOW_MS=200000
 MIN_FLOW_DURATION_MS=5900
 SERVER_SAFETY_DELAY_MS=0
 
@@ -27,8 +35,9 @@ fi
 export PATH="${NODE_BIN_DIR:+$NODE_BIN_DIR:}/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
 
 RUN_DATE="$(date '+%Y-%m-%d')"
-START_AT="${RUN_DATE} 07:00:00"
-TARGET_DATE="$(date -v+2d '+%Y-%m-%d')"
+START_DATE="$(date -v+1d '+%Y-%m-%d')"
+START_AT="${START_DATE} 07:00:00"
+TARGET_DATE="$(date -j -f '%Y-%m-%d' -v+2d "$START_DATE" '+%Y-%m-%d')"
 LOG_DIR="$SCRIPT_DIR/logs"
 PID_FILE="$SCRIPT_DIR/formal-daily-multi.pid"
 CHILD_PIDS=()
@@ -37,26 +46,32 @@ mkdir -p "$LOG_DIR"
 umask 077
 
 if [[ "${1:-}" == "--check" ]]; then
-  echo "账号1: ${PRIMARY_ACCOUNT}（错峰 +${PRIMARY_START_OFFSET_MS}ms）"
+  echo "账号1: ${PRIMARY_ACCOUNT}（验证码/流程错峰 +${PRIMARY_START_OFFSET_MS}ms）"
   echo "  首轮: 主馆${PRIMARY_COURT}场 ${PRIMARY_TIMES}"
-  echo "账号2: ${SECONDARY_ACCOUNT}（错峰 +${SECONDARY_START_OFFSET_MS}ms）"
+  echo "账号2: ${SECONDARY_ACCOUNT}（验证码/流程错峰 +${SECONDARY_START_OFFSET_MS}ms）"
   echo "  首轮: 主馆${SECONDARY_COURT}场 ${SECONDARY_TIMES}"
-  echo "开始时间: $START_AT"
+  echo "账号3: ${TERTIARY_ACCOUNT}（验证码/流程错峰 +${TERTIARY_START_OFFSET_MS}ms）"
+  echo "  首轮: 主馆${TERTIARY_COURT}场 ${TERTIARY_TIMES}"
+  echo "脚本启动: 前一晚 23:50；目标开始时间: $START_AT"
+  echo "服务器时间校准: 脚本启动时执行一次"
   echo "服务器时间额外缓冲: ${SERVER_SAFETY_DELAY_MS}ms"
   echo "最短流程门槛: ${MIN_FLOW_DURATION_MS}ms"
+  if [[ "$RETRY_ON_FAIL" == "1" ]]; then
+    echo "补抢: 启用；轮询间隔 ${RETRY_POLL_MS}ms；窗口 ${RETRY_WINDOW_MS}ms"
+  else
+    echo "补抢: 禁用（仅执行首轮一次提交）"
+  fi
   echo "预约日期: $TARGET_DATE"
   if [[ "$RETRY_ANY_COURT" == "1" ]]; then
-    echo "账号1补抢: 主馆任意场地（1-12号）${RETRY_TIMES}，窗口内选同场连续两小时"
-    echo "账号2补抢: 主馆任意场地（1-12号）${RETRY_TIMES}，窗口内选同场连续两小时"
+    echo "三个账号补抢: 主馆任意场地（1-12号）${RETRY_TIMES}，窗口内选同场连续两小时"
   else
-    echo "账号1补抢: 主馆${PRIMARY_COURT}场 ${RETRY_TIMES}，窗口内选同场连续两小时"
-    echo "账号2补抢: 主馆${SECONDARY_COURT}场 ${RETRY_TIMES}，窗口内选同场连续两小时"
+    echo "三个账号补抢: 按各自首轮场地 ${RETRY_TIMES}，窗口内选同场连续两小时"
   fi
   echo "日志: $LOG_DIR/formal-${RUN_DATE}-<账号>.log"
   exit 0
 fi
 
-# launchd 若因睡眠延迟到 07:00:15 以后才唤起，拒绝迟到下单。
+# launchd 若因睡眠延迟到目标 07:00:15 以后才唤起，拒绝迟到下单。
 NOW_TS="$(date '+%s')"
 START_TS="$(date -j -f '%Y-%m-%d %H:%M:%S' "$START_AT" '+%s')"
 if (( NOW_TS > START_TS + 15 )); then
@@ -104,10 +119,25 @@ run_account() {
   local times="$4"
   local log_file="$LOG_DIR/formal-${RUN_DATE}-${account}.log"
   local retry_scope_args=()
+  local retry_mode_args=()
   if [[ "$RETRY_ANY_COURT" == "1" ]]; then
     retry_scope_args=(--retry-any-court)
   else
     retry_scope_args=(--retry-court "$court")
+  fi
+  if [[ "$RETRY_ON_FAIL" == "1" ]]; then
+    retry_mode_args=(
+      --retry-on-fail
+      --retry-captcha-delay-ms 90000
+      --retry-poll-delay-ms 120000
+      --retry-poll-ms "$RETRY_POLL_MS"
+      --retry-window-ms "$RETRY_WINDOW_MS"
+      --retry-times "$RETRY_TIMES"
+      "${retry_scope_args[@]}"
+      --retry-max-slots 2
+      --retry-require-consecutive-two
+      --retry-submit-attempts 1
+    )
   fi
 
   if ! account_is_ready "$account"; then
@@ -118,7 +148,7 @@ run_account() {
   {
     echo ""
     echo "════════════════ 每日正式预约任务 ════════════════"
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 双账号调度启动，父 PID=$$"
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] 三账号调度启动，父 PID=$$"
     echo "账号: $account"
     echo "流程开始: $START_AT + ${start_offset_ms}ms"
     echo "预计最早发单: $START_AT + $((start_offset_ms + MIN_FLOW_DURATION_MS))ms"
@@ -134,6 +164,7 @@ run_account() {
   /usr/bin/caffeinate -dims bash "$SCRIPT_DIR/test-submit.sh" \
     --start-at "$START_AT" \
     --start-offset-ms "$start_offset_ms" \
+    --calibrate-at-start \
     --server-safety-delay-ms "$SERVER_SAFETY_DELAY_MS" \
     --min-flow-duration-ms "$MIN_FLOW_DURATION_MS" \
     --account "$account" \
@@ -144,22 +175,15 @@ run_account() {
     --with-captcha \
     --day-info-mode predict \
     --submit-attempts 1 \
-    --retry-on-fail \
-    --retry-captcha-delay-ms 90000 \
-    --retry-poll-delay-ms 120000 \
-    --retry-window-ms 200000 \
-    --retry-poll-ms 3000 \
-    --retry-times "$RETRY_TIMES" \
-    "${retry_scope_args[@]}" \
-    --retry-max-slots 2 \
-    --retry-require-consecutive-two \
-    --retry-submit-attempts 1 \
+    "${retry_mode_args[@]}" \
     --execute >> "$log_file" 2>&1
 }
 
 run_account "$PRIMARY_ACCOUNT" "$PRIMARY_START_OFFSET_MS" "$PRIMARY_COURT" "$PRIMARY_TIMES" &
 CHILD_PIDS+=("$!")
 run_account "$SECONDARY_ACCOUNT" "$SECONDARY_START_OFFSET_MS" "$SECONDARY_COURT" "$SECONDARY_TIMES" &
+CHILD_PIDS+=("$!")
+run_account "$TERTIARY_ACCOUNT" "$TERTIARY_START_OFFSET_MS" "$TERTIARY_COURT" "$TERTIARY_TIMES" &
 CHILD_PIDS+=("$!")
 
 EXIT_CODE=0

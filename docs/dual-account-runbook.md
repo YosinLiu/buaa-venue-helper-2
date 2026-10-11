@@ -1,8 +1,8 @@
-# 双账号抢场运行手册
+# 多账号抢场运行手册
 
 [返回 README](../README.md) · [查看增强版与历史 Git 基线差异](local-changes-vs-git.md)
 
-本文说明如何在当前增强版中配置两个独立账号、设置每日场地和时间、进行无提交测试，并部署到 macOS launchd 使用的正式运行目录。
+本文说明如何在当前增强版中配置多个独立账号、设置每日场地和时间、进行无提交测试，并部署到 macOS launchd 使用的正式运行目录。
 
 > 只在本人账号及授权范围内使用，并遵守场馆预约规则。不要把 `config.json`、Playwright profile、`*-auth.json` 或密码提交到 Git。
 
@@ -10,10 +10,10 @@
 
 只调整第二天要抢的场地和时段时，按以下顺序操作：
 
-1. 编辑源码目录私有文件 `run-daily.local.sh` 中的 `PRIMARY_COURT`、`PRIMARY_TIMES`、`SECONDARY_COURT` 和 `SECONDARY_TIMES`；两个账号的补抢共同使用 `RETRY_TIMES`，当前为 `18:00–22:00`。
+1. 编辑源码目录私有文件 `run-daily.local.sh` 中的 `PRIMARY_COURT`、`PRIMARY_TIMES`、`SECONDARY_COURT` 和 `SECONDARY_TIMES`；三个账号的补抢共同使用 `RETRY_TIMES`，当前为 `18:00–22:00`。
 2. 把同样的首轮目标写入 `config.json` 对应账号的 `slotPreferences`，并同步各自的 `retrySlotPreferences` 搜索窗口。
 3. 执行 `bash run-daily.sh --check`，确认账号、场地、时段和自动计算的预约日期。
-4. 执行双账号 `--timing-test`，确认首轮场地 `spaceId/timeId`、300ms 错峰和 5900ms 门槛（此演练不进入失败后的补抢分支）；不要加 `--execute`。
+4. 执行三账号 `--timing-test`，确认首轮场地 `spaceId/timeId`、2000/2300/2600ms 错峰和 5900ms 门槛（此演练不进入失败后的补抢分支）；不要加 `--execute`。
 5. 备份并同步到 `~/Library/Application Support/buaa-venue-helper-2-runtime/`。
 6. 进入 runtime 再执行一次 `bash run-daily.sh --check`。
 
@@ -24,15 +24,17 @@
 生产任务的调用关系：
 
 ```text
-launchd（每天 06:50）
+launchd（前一晚 23:50）
   └─ run-daily.sh
-      ├─ test-submit.js --account account1
+      ├─ test-submit.js --account account1 --start-offset-ms 2000
       │   └─ 独立 DDDDOCR worker
-      └─ test-submit.js --account account2 --start-offset-ms 300
+      ├─ test-submit.js --account account2 --start-offset-ms 2300
+      │   └─ 独立 DDDDOCR worker
+      └─ test-submit.js --account account3 --start-offset-ms 2600
           └─ 独立 DDDDOCR worker
 ```
 
-两个账号之间隔离：
+每个账号之间隔离：
 
 - Playwright profile
 - Cookie/token auth 文件
@@ -103,6 +105,7 @@ bash test-submit.sh --save-auth --account account2
 ```bash
 node dump-buddies.mjs account1
 node dump-buddies.mjs account2
+node dump-buddies.mjs account3
 ```
 
 检查：
@@ -113,7 +116,7 @@ node dump-buddies.mjs account2
 
 账号自己的手机号可以从 `/api/venue/students/<userId>` 只读接口核对，但不要在日志或 Git 中输出完整号码。
 
-## 3. 设置两个账号的场地和时间
+## 3. 设置多个账号的场地和时间
 
 首次部署先建立私有覆盖文件：
 
@@ -147,11 +150,11 @@ SERVER_SAFETY_DELAY_MS=0
 
 不要把真实账号名、个人路径或凭据改进公开模板；`run-daily.local.sh` 不提交到 Git。
 
-同时把相同的首轮偏好写入 `config.json` 的各账号 `slotPreferences`，并将两个账号的 `retrySlotPreferences` 搜索时段都设置为 `18:00–22:00`，使手工运行和定时运行的偏好保持一致。手工补抢也要传入下述严格连续两小时参数。
+同时把相同的首轮偏好写入 `config.json` 的各账号 `slotPreferences`，并将三个账号的 `retrySlotPreferences` 搜索时段都设置为 `18:00–22:00`，使手工运行和定时运行的偏好保持一致。手工补抢也要传入下述严格连续两小时参数。
 
-当前持续生效的策略（最近沿用示例：`2026-09-27 07:00` 抢 `2026-09-29`）为：账号 1 首轮选择主馆 1 号场 `20:00–22:00`，账号 2 首轮选择主馆 2 号场 `18:00–20:00`。脚本每天按运行日期加两天计算预约日期，以上场地和时段会持续生效，直到再次修改。
+当前本机策略为：zxy 首轮主馆 2 号场 `18:00–20:00`，BY2402114 首轮主馆 2 号场 `20:00–22:00`，jyt 首轮主馆 2 号场 `18:00–20:00`。脚本前一晚启动，次日 07:00 执行，预约日期按流程日后两天计算。
 
-正式脚本让两个账号共用 `RETRY_TIMES`，传入 `--retry-times "$RETRY_TIMES" --retry-any-court --retry-max-slots 2 --retry-require-consecutive-two`。第二轮可在主馆 1–12 号场中换场，并从 `18:00–22:00` 中选择同场连续两小时：`18:00–20:00`、`19:00–21:00` 或 `20:00–22:00`。没有合适组合时继续轮询，直到达到退出条件；每个账号只订两小时，不订满四小时，也不降级为一小时。此配置不使用 `--retry-require-all`、`--retry-prefer-consecutive-two` 或 `--retry-fallback-single`。
+正式脚本让三个账号共用 `RETRY_TIMES`，传入 `--retry-times "$RETRY_TIMES" --retry-any-court --retry-max-slots 2 --retry-require-consecutive-two`。第二轮可在主馆 1–12 号场中换场，并从 `18:00–22:00` 中选择同场连续两小时：`18:00–20:00`、`19:00–21:00` 或 `20:00–22:00`。没有合适组合时继续轮询，直到达到退出条件；每个账号只订两小时，不订满四小时，也不降级为一小时。此配置不使用 `--retry-require-all`、`--retry-prefer-consecutive-two` 或 `--retry-fallback-single`。
 
 新参数 `--retry-require-consecutive-two` 是严格要求同场连续两小时。旧参数 `--retry-prefer-consecutive-two` 的通用行为保持不变，它会在没有连续两小时的情况下降级为一个小时，不用于保证当前补抢的完整两小时要求。
 
@@ -160,11 +163,12 @@ SERVER_SAFETY_DELAY_MS=0
 当前时间线：
 
 ```text
-账号1: 07:00:00.000 开始验证码流程 → 约 07:00:05.900 发单
-账号2: 07:00:00.300 开始验证码流程 → 约 07:00:06.200 发单
+zxy: 07:00:02.000 开始验证码流程 → 约 07:00:07.900 发单
+BY2402114: 07:00:02.300 开始验证码流程 → 约 07:00:08.200 发单
+jyt: 07:00:02.600 开始验证码流程 → 约 07:00:08.500 发单
 ```
 
-以上是名义时间。实际流程起点还会受到服务器 Date 头秒级精度、网络 RTT 和保守下界校准影响。历史 timing-test 中两个流程实际相差约 `240–466ms`，因此“300ms”应理解为配置错峰目标，而不是每次都精确到单毫秒。
+以上是名义时间。实际流程起点还会受到服务器 Date 头秒级精度、网络 RTT 和保守下界校准影响。当前三个流程的配置错峰为 2000/2300/2600ms；实际差值仍会受各自校时和调度影响，而不是每次都精确到单毫秒。
 
 历史 6000ms 门槛样本：
 
@@ -188,7 +192,7 @@ SERVER_SAFETY_DELAY_MS=0
 - 两者差值，即网络/服务器附加耗时
 - 成功与失败结果，避免只根据单次成功调整参数
 
-## 5. 双账号启动方式
+## 5. 三账号启动方式
 
 ### 5.1 手工检查配置
 
@@ -198,18 +202,18 @@ bash run-daily.sh --check
 
 它会显示：
 
-- 两个账号
-- 各自首轮场地和时段
-- 300ms 错峰
+- 三个账号
+- 各自首轮场地、时段和错峰
+- 启动阶段校准一次服务器时间
 - 5900ms 门槛
 - 自动计算的预约日期
 - 补抢范围
 
-该命令不会预约，也不验证登录或账号资料是否完整。日期按运行当天计算；07:00 后检查仍显示当天的计划。
+该命令不会预约，也不验证登录或账号资料是否完整。日期按次日 07:00 的流程日计算。
 
 ### 5.2 手工启动正式任务
 
-通常不需要手工运行，launchd 会在 06:50 启动。如果需要手工运行：
+通常不需要手工运行，launchd 会在前一晚 23:50 启动并等待次日 07:00。如果需要手工运行：
 
 ```bash
 mkdir -p logs
@@ -223,6 +227,7 @@ nohup bash run-daily.sh > logs/manual-daily.out.log 2>&1 &
 ```text
 logs/formal-YYYY-MM-DD-account1.log
 logs/formal-YYYY-MM-DD-account2.log
+logs/formal-YYYY-MM-DD-account3.log
 ```
 
 ### 5.3 launchd
@@ -233,7 +238,7 @@ LaunchAgent 命名示例（已有部署请使用实际安装的 Label）：
 ~/Library/LaunchAgents/com.example.buaa-venue.daily.plist
 ```
 
-它每天 06:50 调用：
+它每天前一晚 23:50 调用：
 
 ```text
 ~/Library/Application Support/buaa-venue-helper-2-runtime/run-daily.sh
@@ -293,7 +298,7 @@ bash run-daily.sh --check
 npm test
 ```
 
-再运行两个账号的 `--timing-test`。它验证首轮验证码与时间门，不会生成订单，也不进入补抢选择和提交分支；`npm test` 使用离线样本验证补抢的严格两小时约束、同一时段不重复选择多个场地，以及提交模式参数互斥，不联网、不读取账号、不下单。演练示例：
+再运行三个账号的 `--timing-test`。它验证首轮验证码与时间门，不会生成订单，也不进入补抢选择和提交分支；`npm test` 使用离线样本验证补抢的严格两小时约束、同一时段不重复选择多个场地，以及提交模式参数互斥，不联网、不读取账号、不下单。演练示例：
 
 ```bash
 START_AT="$(date -v+15S '+%Y-%m-%d %H:%M:%S')"
@@ -353,8 +358,8 @@ rsync -a \
 rsync -a docs/ "$RUNTIME/docs/"
 rsync -a tests/ "$RUNTIME/tests/"
 
-# 重新登录或首次部署时，分别同步两个账号的 profile 和 auth
-for ACCOUNT in account1 account2; do
+# 重新登录或首次部署时，分别同步三个账号的 profile 和 auth
+for ACCOUNT in account1 account2 account3; do
   rsync -a ".playwright-profile-${ACCOUNT}/" \
     "$RUNTIME/.playwright-profile-${ACCOUNT}/"
   rsync -a ".playwright-profile-${ACCOUNT}-auth.json" "$RUNTIME/"
@@ -374,6 +379,7 @@ bash run-daily.sh --check
 npm test
 node dump-buddies.mjs account1
 node dump-buddies.mjs account2
+node dump-buddies.mjs account3
 ```
 
 回滚时，将对应 `backups/before-*` 目录中的代码、文档、私有 `config.json`、`run-daily.local.sh` 和必要的 auth/profile 一并恢复，然后再次运行语法检查和 `--check`。备份含私有信息，不要提交或分享。Git 更新和推送不会自动同步 runtime。
@@ -395,9 +401,9 @@ node dump-buddies.mjs account2
 
 任一条件不满足就跳过，并写入该账号日志。
 
-### 两个账号是否共用 OCR
+### 三个账号是否共用 OCR
 
-当前不是。每个 `test-submit.js` 进程各启动一个 DDDDOCR worker，可并行识别。实测两份模型合计约 `403 MiB RSS`，OCR 耗时约 `200–310ms`，资源可接受且不会互相排队。
+每个 `test-submit.js` 进程各启动一个 DDDDOCR worker，可并行识别；三个 worker 的内存开销高于双账号版本，应在首次正式运行后结合进程 RSS 检查资源。
 
 ### 验证码接口凌晨返回 502/504
 

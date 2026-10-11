@@ -119,6 +119,7 @@ function printHelp() {
   --save-auth                 启动浏览器读取登录态并保存到文件后退出（首次使用或登录过期时运行）
   --start-at TIME             到指定时刻才开始场地查询/验证码流程。支持 HH:MM[:SS] 或完整日期时间
   --start-offset-ms N         在 --start-at 基础上整体平移 N ms；负数提前、正数延后
+  --calibrate-at-start        在脚本启动时校准服务器时间；不等到目标时间前一分钟
   --server-safety-delay-ms N  服务器校时后的额外启动缓冲，默认 200ms；双账号精确错峰可设为 0
   --min-flow-duration-ms N    从流程开始到提交至少等待 N ms，默认 6000ms
   --at TIME                   目标提交时间，提前启动做好准备，到点发请求。支持 "HH:MM[:SS]" 或 "YYYY-MM-DD HH:MM[:SS]"
@@ -170,6 +171,7 @@ function parseArgs(argv) {
     saveAuth: false,
     startAt: "",
     startOffsetMs: 0,
+    calibrateAtStart: false,
     serverSafetyDelayMs: 200,
     minFlowDurationMs: 6000,
     at: "",
@@ -192,6 +194,7 @@ function parseArgs(argv) {
     else if (arg.startsWith("--start-at=")) args.startAt = normalizeText(arg.slice("--start-at=".length));
     else if (arg === "--start-offset-ms") args.startOffsetMs = Number(argv[++i]) || 0;
     else if (arg.startsWith("--start-offset-ms=")) args.startOffsetMs = Number(arg.slice("--start-offset-ms=".length)) || 0;
+    else if (arg === "--calibrate-at-start") args.calibrateAtStart = true;
     else if (arg === "--server-safety-delay-ms") args.serverSafetyDelayMs = Math.max(0, Number(argv[++i]) || 0);
     else if (arg.startsWith("--server-safety-delay-ms=")) args.serverSafetyDelayMs = Math.max(0, Number(arg.slice("--server-safety-delay-ms=".length)) || 0);
     else if (arg === "--min-flow-duration-ms") args.minFlowDurationMs = Math.max(0, Number(argv[++i]) || 0);
@@ -716,14 +719,15 @@ async function readServerClockSample() {
   };
 }
 
-async function calibrateServerClockBefore(targetTime, label = "服务器时间预校准") {
-  // 在首轮目标前一分钟完成一次校准。首轮和补抢均复用结果，不再访问校时地址。
+async function calibrateServerClockBefore(targetTime, label = "服务器时间预校准", options = {}) {
+  // 默认在首轮目标前一分钟完成一次校准；夜间预启动时可在脚本启动阶段校准。
   const calibrationLeadMs = 60000;
-  const preWaitMs = targetTime - Date.now() - calibrationLeadMs;
+  const preWaitMs = options.atStart ? 0 : targetTime - Date.now() - calibrationLeadMs;
   if (preWaitMs > 0) await sleep(preWaitMs);
 
   const samples = [];
-  const maxAttempts = 2;
+  // 夜间预启动只取一个样本；失败就回退本机 NTP，避免三个并行账号各自重复校时。
+  const maxAttempts = options.atStart ? 1 : 2;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     // 成功后立即停止，最多只在首次失败时再试一次，避免校时请求本身触发限流。
     // 正常任务在提前一分钟取样；若进程晚启动，最迟保留 2.5 秒安全边界。
@@ -1503,7 +1507,9 @@ async function main() {
     const secsUntil = Math.round((targetStartTime - Date.now()) / 1000);
     const offsetLabel = args.startOffsetMs !== 0 ? `，整体偏移 ${args.startOffsetMs > 0 ? "+" : ""}${args.startOffsetMs}ms` : "";
     log(`目标流程开始时间: ${new Date(targetStartTime).toLocaleString("zh-CN")} ${formatClockWithMs(targetStartTime)}${offsetLabel} (${secsUntil}s 后)`);
-    log("整点模式将在首轮目标前一分钟完成唯一一次服务器预校准；首轮和补抢复用结果，07:00 后不再联网校时。");
+    log(args.calibrateAtStart
+      ? "夜间启动模式将在脚本启动阶段完成唯一一次服务器预校准；首轮和补抢复用结果，目标时间后不再联网校时。"
+      : "整点模式将在首轮目标前一分钟完成唯一一次服务器预校准；首轮和补抢复用结果，目标时间后不再联网校时。");
   }
   if (args.at) {
     targetSubmitTime = parseTargetTime(args.at);
@@ -1629,7 +1635,7 @@ async function main() {
     }
 
     if (targetStartTime > 0) {
-      serverCalibration = await calibrateServerClockBefore(targetStartTime, "首轮服务器预校准");
+      serverCalibration = await calibrateServerClockBefore(targetStartTime, "首轮服务器预校准", { atStart: args.calibrateAtStart });
       await waitWithServerCalibration(targetStartTime, serverCalibration, "首轮时间门", args.serverSafetyDelayMs);
     }
     flowStartedAt = Date.now();
